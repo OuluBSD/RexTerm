@@ -3,12 +3,15 @@ import os
 import queue
 import argparse
 import re
+import html
 from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QTextEdit, QLineEdit, QScrollBar, QMessageBox
 from PyQt6.QtCore import pyqtSignal, Qt, QThread
 from PyQt6.QtGui import QFont, QAction, QKeyEvent
 import winpty as pywinpty  # In MSYS2/MinGW environments, pywinpty is installed as winpty
 import signal
 import winreg
+import pyte
+from pyte import streams, screens
 
 
 def find_msys64_path():
@@ -171,7 +174,7 @@ import html
 
 
 class TerminalEmulator:
-    """A wrapper for winpty to handle Windows terminal operations"""
+    """A wrapper for winpty to handle Windows terminal operations with pyte terminal emulation"""
 
     def __init__(self, cols=80, rows=24, shell_type='cmd'):
         self.cols = cols
@@ -181,6 +184,11 @@ class TerminalEmulator:
         self.command_queue = queue.Queue()
         self.shell_type = shell_type  # 'cmd', 'bash', or 'auto'
         self.msys64_path = find_msys64_path() if shell_type in ['bash', 'auto'] else None
+
+        # Initialize pyte for proper terminal emulation
+        self.screen = pyte.Screen(cols, rows)
+        self.stream = pyte.Stream()
+        self.stream.attach(self.screen)
 
     def start(self):
         """Start the terminal session"""
@@ -212,8 +220,14 @@ class TerminalEmulator:
         if not self.running or not self.pty_process.isalive():
             return ''
         try:
-            # Only read if data is available
-            return self.pty_process.read(size)
+            # Read raw data from pty
+            raw_data = self.pty_process.read(size)
+
+            # Process the raw data with pyte for proper terminal emulation
+            if raw_data:
+                self.stream.feed(raw_data)
+
+            return raw_data
         except Exception as e:
             print(f"Read error: {e}")
             # Check if process is still alive
@@ -293,6 +307,9 @@ class ShellWidget(QWidget):
         self.waiting_for_command_echo = False
         self.last_command = ""
 
+        # Track if we're expecting a new prompt
+        self.expecting_new_prompt = False
+
         # Setup terminal emulator
         self.terminal = TerminalEmulator(cols=80, rows=24, shell_type=shell_type)
         if not self.terminal.start():
@@ -341,40 +358,78 @@ class ShellWidget(QWidget):
         self.setLayout(layout)
     
     def append_output(self, text):
-        """Append output to the text area"""
-        # Add new text to the buffer
-        self.output_buffer += text
+        """Append output to the text area using pyte for proper terminal rendering"""
+        # Add new text to the pyte stream to process terminal escape sequences
+        if text:
+            self.terminal.stream.feed(text)
 
-        # Split the buffer by newlines
-        lines = self.output_buffer.split('\n')
+        # Generate HTML content from pyte screen that preserves colors and formatting
+        output_lines = []
+        for line_idx in range(self.terminal.screen.lines):
+            line = self.terminal.screen.buffer[line_idx]
+            line_html_parts = []
 
-        # Keep the last incomplete line in the buffer
-        self.output_buffer = lines[-1]
+            for char in line:
+                # Check if char is a Char object (has data attribute) or just a character
+                if hasattr(char, 'data'):
+                    # This is a pyte Char object with attributes
+                    char_data = char.data
+                    fg = char.fg if char.fg != 'default' else 'white'
+                    bg = char.bg if char.bg != 'default' else 'black'
+                    bold = char.bold
+                    italic = char.italics  # Note: pyte uses 'italics' not 'italic'
+                    underline = char.underscore
+                else:
+                    # This is just a regular character
+                    char_data = str(char)
+                    fg = 'white'
+                    bg = 'black'
+                    bold = False
+                    italic = False
+                    underline = False
 
-        # Process all complete lines
-        complete_lines = lines[:-1]
+                # Map pyte colors to standard CSS colors
+                color_map = {
+                    'black': 'black',
+                    'red': 'red',
+                    'green': 'green',
+                    'yellow': 'yellow',
+                    'blue': 'blue',
+                    'magenta': 'magenta',
+                    'cyan': 'cyan',
+                    'white': 'white',
+                    # Some additional mappings
+                    'default': 'currentColor'
+                }
 
-        for line in complete_lines:
-            # Normalize line endings and handle special characters
-            line = line.replace('\r', '')  # Remove carriage returns
-            line = line.replace('\b', '')  # Remove backspace characters
+                fg_color = color_map.get(fg, fg)
+                bg_color = color_map.get(bg, bg)
 
-            # Check if this line is an echo of the last command (to avoid duplication)
-            if self.waiting_for_command_echo and line == self.last_command:
-                # Skip this line as it's the command echo
-                self.waiting_for_command_echo = False
-                continue
+                # Build style string
+                styles = []
+                if fg_color != 'currentColor':
+                    styles.append(f"color: {fg_color}")
+                if bg_color != 'black':
+                    styles.append(f"background-color: {bg_color}")
+                if bold:
+                    styles.append("font-weight: bold")
+                if italic:
+                    styles.append("font-style: italic")
+                if underline:
+                    styles.append("text-decoration: underline")
 
-            # Convert ANSI codes to HTML if needed
-            has_ansi = '\x1b[' in line
-            if has_ansi:
-                html_line = ansi_to_html(line)
-                self.output_area.textCursor().insertHtml(html_line)
-            else:
-                self.output_area.insertPlainText(line)
+                if styles:
+                    style_str = "; ".join(styles)
+                    line_html_parts.append(f'<span style="{style_str}">{html.escape(char_data)}</span>')
+                else:
+                    line_html_parts.append(html.escape(char_data))
 
-            # Add newline after each complete line
-            self.output_area.insertPlainText('\n')
+            # Join all HTML parts for this line and add to output
+            output_lines.append("".join(line_html_parts).rstrip())
+
+        # Join all lines and set HTML content
+        output_html = "\n".join(output_lines)
+        self.output_area.setHtml(output_html)
 
         # Auto-scroll to bottom
         scrollbar = self.output_area.verticalScrollBar()
@@ -391,9 +446,11 @@ class ShellWidget(QWidget):
             # Track that we're waiting for command echo to avoid duplication
             self.waiting_for_command_echo = True
             self.last_command = command
+            self.expecting_new_prompt = True
 
-            # Send command to terminal
-            self.terminal.write(command + '\r\n')
+            # Send command to terminal - use only \n which is standard for Unix-like terminals
+            # This should help reduce duplicate prompts
+            self.terminal.write(command + '\n')
 
             # Clear the input line
             self.input_line.clear()
@@ -436,7 +493,11 @@ class ShellWidget(QWidget):
         """Clear the terminal output area"""
         self.output_area.clear()
         # Also send clear command to actual terminal process
-        self.terminal.write('cls\r\n')
+        # Use \n instead of \r\n for Unix-like terminals
+        if hasattr(self.terminal, 'shell_type') and self.terminal.shell_type in ['bash', 'auto'] and self.terminal.msys64_path:
+            self.terminal.write('clear\n')
+        else:
+            self.terminal.write('cls\n')
     
     def closeEvent(self, event):
         """Handle window close event"""

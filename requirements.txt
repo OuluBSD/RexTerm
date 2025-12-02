@@ -1,0 +1,3 @@
+pyte>=0.8.0
+PyQt6>=6.0.0
+pywinpty>=2.0.0  # installed as 'winpty' in MSYS2/MinGW environments

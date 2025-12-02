@@ -336,25 +336,31 @@ class ShellWidget(QWidget):
     def setup_ui(self):
         """Setup the user interface"""
         layout = QVBoxLayout()
-        
-        # Terminal output area
+
+        # Terminal output area - now will act as both output and input
         self.output_area = QTextEdit()
-        self.output_area.setReadOnly(True)
+        # Make it NOT read-only so users can type at the end
+        self.output_area.setReadOnly(False)
         font = QFont("Courier New", 10)
         self.output_area.setFont(font)
-        
+
         # Make it act more like a terminal
         self.output_area.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self.output_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
-        
-        # Input line
-        self.input_line = QLineEdit()
-        self.input_line.setFont(font)
-        self.input_line.returnPressed.connect(self.execute_command)
-        
+
+        # Add custom context menu to hide paste, etc. if needed
+        self.output_area.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+
+        # Track where user input starts in the text
+        self.input_start_position = 0
+
+        # Input line is no longer needed as input will be part of the output area
+        # self.input_line = QLineEdit()
+        # self.input_line.setFont(font)
+        # self.input_line.returnPressed.connect(self.execute_command)
+
         layout.addWidget(self.output_area)
-        layout.addWidget(self.input_line)
-        
+
         self.setLayout(layout)
     
     def append_output(self, text):
@@ -363,30 +369,36 @@ class ShellWidget(QWidget):
         if text:
             self.terminal.stream.feed(text)
 
-        # Generate HTML content from pyte screen that preserves colors and formatting
+        # Get the current cursor position to maintain it after update
+        cursor = self.output_area.textCursor()
+        original_position = cursor.position()
+
+        # Get the current user input at the end (if any) and preserve it
+        full_text = self.output_area.toPlainText()
+        preserved_input = ""
+
+        # Store current user input for later restoration
+        if self.input_start_position < len(full_text):
+            preserved_input = full_text[self.input_start_position:]
+
+        # Generate content from pyte screen that preserves colors and formatting
         output_lines = []
         for line_idx in range(self.terminal.screen.lines):
+            # Get the line from the buffer to access character attributes
             line = self.terminal.screen.buffer[line_idx]
-            line_html_parts = []
 
-            for char in line:
-                # Check if char is a Char object (has data attribute) or just a character
-                if hasattr(char, 'data'):
-                    # This is a pyte Char object with attributes
-                    char_data = char.data
-                    fg = char.fg if char.fg != 'default' else 'white'
-                    bg = char.bg if char.bg != 'default' else 'black'
-                    bold = char.bold
-                    italic = char.italics  # Note: pyte uses 'italics' not 'italic'
-                    underline = char.underscore
-                else:
-                    # This is just a regular character
-                    char_data = str(char)
-                    fg = 'white'
-                    bg = 'black'
-                    bold = False
-                    italic = False
-                    underline = False
+            line_html_parts = []
+            # Process each character position in the line
+            for col_idx in range(self.terminal.screen.columns):
+                char = line[col_idx]  # This gets the character at position (line_idx, col_idx)
+
+                # Get character and attributes (pyte Char object)
+                char_data = char.data
+                fg = char.fg if char.fg != 'default' else 'white'
+                bg = char.bg if char.bg != 'default' else 'black'
+                bold = char.bold
+                italic = char.italics  # Note: pyte uses 'italics' not 'italic'
+                underline = char.underscore
 
                 # Map pyte colors to standard CSS colors
                 color_map = {
@@ -429,7 +441,22 @@ class ShellWidget(QWidget):
 
         # Join all lines and set HTML content
         output_html = "\n".join(output_lines)
+
+        # Append the preserved input after the new output
+        if preserved_input:
+            output_html += preserved_input
+
+        # Update the output area with the new content
         self.output_area.setHtml(output_html)
+
+        # Update the input start position to after all the terminal output
+        # Find the length of the text corresponding to terminal content
+        output_text = "\n".join(self.terminal.screen.display).rstrip()
+        self.input_start_position = len(output_text)
+
+        # Move cursor to the end to maintain position for user input
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.output_area.setTextCursor(cursor)
 
         # Auto-scroll to bottom
         scrollbar = self.output_area.verticalScrollBar()
@@ -437,45 +464,63 @@ class ShellWidget(QWidget):
     
     def execute_command(self):
         """Execute the command entered by the user"""
-        command = self.input_line.text()
+        # Get the command from the input area
+        full_text = self.output_area.toPlainText()
+        command = full_text[self.input_start_position:]
+
         if command:
             # Add command to history
             self.command_history.append(command)
             self.history_index = len(self.command_history)  # Point to just after the last command
 
-            # Track that we're waiting for command echo to avoid duplication
-            self.waiting_for_command_echo = True
-            self.last_command = command
-            self.expecting_new_prompt = True
-
             # Send command to terminal - use only \n which is standard for Unix-like terminals
             # This should help reduce duplicate prompts
             self.terminal.write(command + '\n')
 
-            # Clear the input line
-            self.input_line.clear()
+            # Clear the input area by updating with just the display content
+            display_text = "\n".join(self.terminal.screen.display).rstrip()
+            self.output_area.setPlainText(display_text)
+            self.input_start_position = len(display_text)
+
+            # Position cursor at the end for next input
+            cursor = self.output_area.textCursor()
+            cursor.movePosition(cursor.MoveOperation.End)
+            self.output_area.setTextCursor(cursor)
     
     def keyPressEvent(self, event: QKeyEvent):
-        """Handle key press events for terminal-like behavior"""
+        """Handle key press events for terminal-like behavior with integrated input"""
         key = event.key()
-        
-        if key == Qt.Key.Key_Up:
+        cursor = self.output_area.textCursor()
+
+        # Check if cursor is at the input area (after the input start position)
+        is_at_input_area = cursor.position() >= self.input_start_position
+
+        if key == Qt.Key.Key_Up and is_at_input_area:
             # Previous command in history
             if self.command_history and self.history_index > 0:
+                if self.history_index == len(self.command_history):
+                    # Store current input before navigating history
+                    current_input = self.output_area.toPlainText()[self.input_start_position:]
+                    self.current_command = current_input
                 self.history_index -= 1
-                self.input_line.setText(self.command_history[self.history_index])
-                self.input_line.setCursorPosition(len(self.input_line.text()))  # Move cursor to end
-        elif key == Qt.Key.Key_Down:
+                # Update the current input area with the history command
+                self.update_input_area(self.command_history[self.history_index])
+        elif key == Qt.Key.Key_Down and is_at_input_area:
             # Next command in history
             if self.history_index < len(self.command_history) - 1:
                 self.history_index += 1
-                self.input_line.setText(self.command_history[self.history_index])
-                self.input_line.setCursorPosition(len(self.input_line.text()))  # Move cursor to end
+                # Update the current input area with the history command
+                self.update_input_area(self.command_history[self.history_index])
             else:
                 # Clear input if at current command
                 self.history_index = len(self.command_history)
-                self.input_line.clear()
-        elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if self.current_command:
+                    self.update_input_area(self.current_command)
+                    self.current_command = ""
+                else:
+                    self.update_input_area("")
+        elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and is_at_input_area:
+            # Execute command when Enter is pressed in the input area
             self.execute_command()
         elif key == Qt.Key.Key_C and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
             # Ctrl+C sends interrupt signal
@@ -485,13 +530,42 @@ class ShellWidget(QWidget):
             # Ctrl+L clears the screen
             self.clear_screen()
             event.accept()
-        else:
-            # For other keys, let the default behavior occur
+        elif is_at_input_area:
+            # For all other keys when in the input area, allow normal input
             super().keyPressEvent(event)
+        else:
+            # If not in input area, only allow navigation keys
+            if key in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Left, Qt.Key.Key_Right,
+                      Qt.Key.Key_PageUp, Qt.Key.Key_PageDown, Qt.Key.Key_Home, Qt.Key.Key_End):
+                super().keyPressEvent(event)
+
+    def update_input_area(self, text):
+        """Update only the input part of the text area"""
+        # Get the display part (everything before the input)
+        display_text = "\n".join(self.terminal.screen.display).rstrip()
+
+        # Set the full content: display + new input
+        full_content = display_text + text
+        self.output_area.setPlainText(full_content)
+
+        # Position the cursor at the end of the content
+        cursor = self.output_area.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.output_area.setTextCursor(cursor)
+
+        # Update input start position
+        self.input_start_position = len(display_text)
     
     def clear_screen(self):
         """Clear the terminal output area"""
-        self.output_area.clear()
+        # Reset the pyte screen
+        self.terminal.screen.reset()
+
+        # Update the display without input
+        display_text = "\n".join(self.terminal.screen.display).rstrip()
+        self.output_area.setPlainText(display_text)
+        self.input_start_position = len(display_text)
+
         # Also send clear command to actual terminal process
         # Use \n instead of \r\n for Unix-like terminals
         if hasattr(self.terminal, 'shell_type') and self.terminal.shell_type in ['bash', 'auto'] and self.terminal.msys64_path:

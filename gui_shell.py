@@ -352,14 +352,18 @@ class ShellWidget(QWidget):
             'red': '#cc0000',
             'green': '#009900',
             'yellow': '#999900',
+            'brown': '#999900',
             'blue': '#0000cc',
             'magenta': '#cc00cc',
             'cyan': '#009999',
             'white': '#cccccc',
+            'lightgray': '#cccccc',
+            'lightgrey': '#cccccc',
             'brightblack': '#555555',
             'brightred': '#ff5555',
             'brightgreen': '#55ff55',
             'brightyellow': '#ffff55',
+            'brightbrown': '#ffff55',
             'brightblue': '#5555ff',
             'brightmagenta': '#ff55ff',
             'brightcyan': '#55ffff',
@@ -397,6 +401,8 @@ class ShellWidget(QWidget):
         self.output_area.setFocus()
         font = QFont("Courier New", 10)
         self.output_area.setFont(font)
+        # Hide the native caret since we render our own cursor block
+        self.output_area.setCursorWidth(0)
 
         # Make it act more like a terminal
         self.output_area.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
@@ -441,16 +447,36 @@ class ShellWidget(QWidget):
 
     def _wrap_html(self, body: str) -> str:
         """Wrap rendered HTML in a <pre> so whitespace is preserved."""
+        cursor_css = (
+            "<style>"
+            ".cursor-block { animation: cursor-blink 1s steps(1, start) infinite; }"
+            "@keyframes cursor-blink { 0%,49% { opacity: 1; } 50%,100% { opacity: 0; } }"
+            "</style>"
+        )
         return (
-            "<pre style=\"margin:0; white-space: pre; font-family:'Courier New', monospace; font-size:10pt;\">"
+            f"{cursor_css}"
+            "<pre style=\"margin:0; white-space: pre; font-family:'Courier New', monospace; font-size:10pt; background-color:#000000; color:#cccccc;\">"
             f"{body}"
             "</pre>"
         )
 
+    def _css_color(self, value):
+        """Convert pyte color tokens (named or hex) to CSS color strings."""
+        if not value or value == "default":
+            return None
+
+        if isinstance(value, str):
+            if value.startswith("#") and len(value) == 7:
+                return value.lower()
+            if re.fullmatch(r"[0-9a-fA-F]{6}", value):
+                return f"#{value.lower()}"
+
+        return self.color_map.get(value, None)
+
     def _style_for_char(self, char) -> str:
         """Return CSS style string for a pyte character."""
-        fg = self.color_map.get(char.fg, None)
-        bg = self.color_map.get(char.bg, None)
+        fg = self._css_color(getattr(char, "fg", None))
+        bg = self._css_color(getattr(char, "bg", None))
 
         # Handle reverse video
         if getattr(char, "reverse", False):
@@ -461,6 +487,8 @@ class ShellWidget(QWidget):
             styles.append(f"color:{fg}")
         if bg:
             styles.append(f"background-color:{bg}")
+        if getattr(char, "conceal", False):
+            styles.append("color: transparent")
         if getattr(char, "bold", False):
             styles.append("font-weight:bold")
         if getattr(char, "italics", False):
@@ -469,7 +497,7 @@ class ShellWidget(QWidget):
             styles.append("text-decoration: underline")
         return ";".join(styles)
 
-    def _render_line(self, line_map):
+    def _render_line(self, line_map, cursor_col=None):
         """Render a single pyte line map to plain text and HTML."""
         plain_chars = []
         html_parts = []
@@ -480,7 +508,32 @@ class ShellWidget(QWidget):
             ch = char.data if char.data is not None else " "
             plain_chars.append(ch)
 
+            is_cursor_cell = cursor_col is not None and col == cursor_col
             style = self._style_for_char(char) or None
+
+            if is_cursor_cell:
+                # Close any active style span before drawing the cursor block
+                if current_style is not None:
+                    html_parts.append("</span>")
+                    current_style = None
+
+                base_style = self._style_for_char(char)
+                base_parts = [
+                    part for part in (base_style.split(";") if base_style else [])
+                    if part and not part.startswith("color:") and not part.startswith("background-color:")
+                ]
+
+                fg = self._css_color(getattr(char, "fg", None)) or "#cccccc"
+                bg = self._css_color(getattr(char, "bg", None)) or "#000000"
+
+                # Invert colors for the cursor block to make it stand out
+                cursor_styles = base_parts + [f"background-color:{fg}", f"color:{bg}"]
+                cursor_char = ch if ch != " " else "\u00a0"
+                html_parts.append(f'<span class="cursor-block" style="{";".join(cursor_styles)}">')
+                html_parts.append(html.escape(cursor_char))
+                html_parts.append("</span>")
+                continue
+
             if style != current_style:
                 if current_style is not None:
                     html_parts.append("</span>")
@@ -508,6 +561,15 @@ class ShellWidget(QWidget):
 
         if isinstance(screen, screens.HistoryScreen):
             line_sources.extend(list(screen.history.top))
+            cursor_row_offset = len(screen.history.top)
+        else:
+            cursor_row_offset = 0
+
+        cursor_line_index = None
+        cursor_col = None
+        if getattr(screen, "cursor", None) is not None:
+            cursor_col = screen.cursor.x
+            cursor_line_index = cursor_row_offset + screen.cursor.y
 
         for row in range(screen.lines):
             line_sources.append(screen.buffer[row])
@@ -515,8 +577,13 @@ class ShellWidget(QWidget):
         if isinstance(screen, screens.HistoryScreen) and screen.history.bottom:
             line_sources.extend(list(screen.history.bottom))
 
-        for line in line_sources:
-            plain_line, html_line = self._render_line(line)
+        if cursor_line_index is not None and cursor_line_index >= len(line_sources):
+            cursor_line_index = None
+            cursor_col = None
+
+        for idx, line in enumerate(line_sources):
+            active_cursor_col = cursor_col if cursor_line_index is not None and idx == cursor_line_index else None
+            plain_line, html_line = self._render_line(line, cursor_col=active_cursor_col)
             plain_lines.append(plain_line)
             html_lines.append(html_line)
 

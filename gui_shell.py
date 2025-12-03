@@ -473,9 +473,9 @@ class ShellWidget(QWidget):
             self.command_history.append(command)
             self.history_index = len(self.command_history)  # Point to just after the last command
 
-            # Send command to terminal - use only \n which is standard for Unix-like terminals
-            # This should help reduce duplicate prompts
-            self.terminal.write(command + '\n')
+            # Send command to terminal - try using \r which is the standard for terminal input
+            # as some terminals expect \r rather than \n for command execution
+            self.terminal.write(command + '\r')
     
     def keyPressEvent(self, event: QKeyEvent):
         """Handle key press events for terminal-like behavior with integrated input"""

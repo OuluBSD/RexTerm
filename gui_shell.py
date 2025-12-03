@@ -430,7 +430,8 @@ class ShellWidget(QWidget):
         char_width = max(1, metrics.horizontalAdvance("M"))
         char_height = max(1, metrics.lineSpacing())
 
-        new_cols = max(2, viewport.width() // char_width)
+        # Subtract one column so the rendered width fits fully inside the viewport
+        new_cols = max(2, (viewport.width() // char_width) - 1)
         new_rows = max(2, viewport.height() // char_height)
 
         if new_cols != self.terminal.cols or new_rows != self.terminal.rows:

@@ -477,7 +477,8 @@ class ShellWidget(QWidget):
             # This should help reduce duplicate prompts
             self.terminal.write(command + '\n')
 
-            # Clear the input area by updating with just the display content
+            # Immediately clear the input area by setting the current display content
+            # Adding the command to the display so user sees it was accepted
             display_text = "\n".join(self.terminal.screen.display).rstrip()
             self.output_area.setPlainText(display_text)
             self.input_start_position = len(display_text)

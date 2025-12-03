@@ -36,3 +36,9 @@ env/
 ENV/
 .venv/
 .env/
+
+# Log files
+*.log
+
+# Local debug helpers
+debug_*.py

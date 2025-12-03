@@ -4,8 +4,10 @@ import queue
 import argparse
 import re
 import html
+import time
+import logging
 from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QTextEdit, QLineEdit, QScrollBar, QMessageBox
-from PyQt6.QtCore import pyqtSignal, Qt, QThread
+from PyQt6.QtCore import pyqtSignal, Qt, QThread, QEvent
 from PyQt6.QtGui import QFont, QAction, QKeyEvent
 import winpty as pywinpty  # In MSYS2/MinGW environments, pywinpty is installed as winpty
 import signal
@@ -310,10 +312,18 @@ class ShellWidget(QWidget):
         # Track if we're expecting a new prompt
         self.expecting_new_prompt = False
 
+        # Drop preserved input after commands so stale text doesn't linger
+        self.clear_pending_input = False
+
         # Setup terminal emulator
         self.terminal = TerminalEmulator(cols=80, rows=24, shell_type=shell_type)
         if not self.terminal.start():
             raise Exception("Could not start terminal emulator")
+
+        # Debugging attributes
+        self.debug_enabled = False
+        self.debug_file = None
+        self.logger = None
 
         # Setup UI
         self.setup_ui()
@@ -322,9 +332,6 @@ class ShellWidget(QWidget):
         self.terminal_thread = TerminalThread(self.terminal)
         self.terminal_thread.output_received.connect(self.append_output)
         self.terminal_thread.start()
-
-        # Initial prompt
-        self.append_output("$ ")
 
         # Command history
         self.command_history = []
@@ -341,6 +348,10 @@ class ShellWidget(QWidget):
         self.output_area = QTextEdit()
         # Make it NOT read-only so users can type at the end
         self.output_area.setReadOnly(False)
+        # Route key events through our handler
+        self.output_area.installEventFilter(self)
+        self.output_area.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.output_area.setFocus()
         font = QFont("Courier New", 10)
         self.output_area.setFont(font)
 
@@ -348,8 +359,8 @@ class ShellWidget(QWidget):
         self.output_area.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self.output_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
 
-        # Add custom context menu to hide paste, etc. if needed
-        self.output_area.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+        # Allow normal context menu so text can be copied
+        self.output_area.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
 
         # Track where user input starts in the text
         self.input_start_position = 0
@@ -365,13 +376,12 @@ class ShellWidget(QWidget):
     
     def append_output(self, text):
         """Append output to the text area using pyte for proper terminal rendering"""
-        # Add new text to the pyte stream to process terminal escape sequences
-        if text:
-            self.terminal.stream.feed(text)
 
-        # Get the current cursor position to maintain it after update
-        cursor = self.output_area.textCursor()
-        original_position = cursor.position()
+        # Log the output if debugging is enabled
+        if self.debug_enabled and self.logger:
+            self.logger.debug(f"append_output called with text length: {len(text) if text else 0}")
+            if text:
+                self.logger.debug(f"append_output raw text: {repr(text[:200])}")  # Log first 200 chars
 
         # Get the current user input at the end (if any) and preserve it
         full_text = self.output_area.toPlainText()
@@ -381,82 +391,53 @@ class ShellWidget(QWidget):
         if self.input_start_position < len(full_text):
             preserved_input = full_text[self.input_start_position:]
 
-        # Generate content from pyte screen that preserves colors and formatting
-        output_lines = []
-        for line_idx in range(self.terminal.screen.lines):
-            # Get the line from the buffer to access character attributes
-            line = self.terminal.screen.buffer[line_idx]
+        # Log preserved input for debugging
+        if self.debug_enabled and self.logger:
+            self.logger.debug(f"Preserved input: '{preserved_input}'")
+            self.logger.debug(f"Input start position: {self.input_start_position}, Full text length: {len(full_text)}")
 
-            line_html_parts = []
-            # Process each character position in the line
-            for col_idx in range(self.terminal.screen.columns):
-                char = line[col_idx]  # This gets the character at position (line_idx, col_idx)
+        # If a command was just executed, drop preserved input so old command doesn't linger
+        if getattr(self, "clear_pending_input", False):
+            preserved_input = ""
+            self.clear_pending_input = False
 
-                # Get character and attributes (pyte Char object)
-                char_data = char.data
-                fg = char.fg if char.fg != 'default' else 'white'
-                bg = char.bg if char.bg != 'default' else 'black'
-                bold = char.bold
-                italic = char.italics  # Note: pyte uses 'italics' not 'italic'
-                underline = char.underscore
+        # Build display lines from the pyte screen, trim padding, and drop empty rows at top/bottom
+        display_lines = []
+        for line in self.terminal.screen.display:
+            # Trim padding but keep a single trailing space (to preserve '$ ' prompts)
+            trimmed = line.rstrip()
+            if line.endswith(" ") and trimmed:
+                trimmed += " "
+            display_lines.append(trimmed)
+        while display_lines and not display_lines[0]:
+            display_lines.pop(0)
+        while display_lines and not display_lines[-1]:
+            display_lines.pop()
+        if not display_lines:
+            display_lines = [""]
 
-                # Map pyte colors to standard CSS colors
-                color_map = {
-                    'black': 'black',
-                    'red': 'red',
-                    'green': 'green',
-                    'yellow': 'yellow',
-                    'blue': 'blue',
-                    'magenta': 'magenta',
-                    'cyan': 'cyan',
-                    'white': 'white',
-                    # Some additional mappings
-                    'default': 'currentColor'
-                }
-
-                fg_color = color_map.get(fg, fg)
-                bg_color = color_map.get(bg, bg)
-
-                # Build style string
-                styles = []
-                if fg_color != 'currentColor':
-                    styles.append(f"color: {fg_color}")
-                if bg_color != 'black':
-                    styles.append(f"background-color: {bg_color}")
-                if bold:
-                    styles.append("font-weight: bold")
-                if italic:
-                    styles.append("font-style: italic")
-                if underline:
-                    styles.append("text-decoration: underline")
-
-                if styles:
-                    style_str = "; ".join(styles)
-                    line_html_parts.append(f'<span style="{style_str}">{html.escape(char_data)}</span>')
-                else:
-                    line_html_parts.append(html.escape(char_data))
-
-            # Join all HTML parts for this line and add to output
-            output_lines.append("".join(line_html_parts).rstrip())
-
-        # Join all lines and set HTML content
-        output_html = "\n".join(output_lines)
-
-        # Append the preserved input after the new output
+        # Plain text version for display and cursor math
+        display_text = "\n".join(display_lines)
+        full_display_text = display_text
         if preserved_input:
-            output_html += preserved_input
+            full_display_text += preserved_input
 
-        # Update the output area with the new content
-        self.output_area.setHtml(output_html)
+        # Update the output area with the new content (plain text avoids HTML duplication issues)
+        self.output_area.setPlainText(full_display_text)
 
-        # Update the input start position to after all the terminal output
-        # Find the length of the text corresponding to terminal content
-        output_text = "\n".join(self.terminal.screen.display).rstrip()
-        self.input_start_position = len(output_text)
+        # Update the input start position to after the terminal output (in plain text)
+        self.input_start_position = len(display_text)
 
-        # Move cursor to the end to maintain position for user input
-        cursor.movePosition(cursor.MoveOperation.End)
-        self.output_area.setTextCursor(cursor)
+        # Log the output text for debugging
+        if self.debug_enabled and self.logger:
+            self.logger.debug(f"Terminal screen display output: {repr(display_text[:500])}")
+            self.logger.debug(f"Updated input_start_position to: {self.input_start_position}")
+
+        # Create a new cursor and move it to the end to position for user input
+        new_cursor = self.output_area.textCursor()
+        new_cursor.movePosition(new_cursor.MoveOperation.End)
+        self.output_area.setTextCursor(new_cursor)
+        self.output_area.setFocus()
 
         # Auto-scroll to bottom
         scrollbar = self.output_area.verticalScrollBar()
@@ -473,17 +454,59 @@ class ShellWidget(QWidget):
             self.command_history.append(command)
             self.history_index = len(self.command_history)  # Point to just after the last command
 
-            # Send command to terminal - try using \r which is the standard for terminal input
-            # as some terminals expect \r rather than \n for command execution
-            self.terminal.write(command + '\r')
+            # Send command to terminal - try using \n which is more standard for most shells
+            # \r should work for Windows cmd, \n for bash, so we'll try to determine based on shell type
+            if hasattr(self.terminal, 'shell_type') and self.terminal.shell_type in ['bash', 'auto'] and self.terminal.msys64_path:
+                # For bash, use \n
+                self.terminal.write(command + '\n')
+            else:
+                # For cmd, use \r
+                self.terminal.write(command + '\r')
+
+            # After sending the command, clear any preserved input on next redraw
+            self.clear_pending_input = True
+
+            # Immediately clear the typed command from the UI; the shell will echo it back
+            self.update_input_area("")
+
+        # Clear the input area after command execution
+        # We need to update the input_start_position to reflect the new end of the output
+        # This will be handled in append_output when new data comes from the terminal
     
-    def keyPressEvent(self, event: QKeyEvent):
+    def eventFilter(self, obj, event):
+        """Route key presses from the text area through our handler"""
+        if obj is self.output_area and event.type() == QEvent.Type.KeyPress:
+            return self.handle_key_press(event)
+        return super().eventFilter(obj, event)
+
+    def handle_key_press(self, event: QKeyEvent):
         """Handle key press events for terminal-like behavior with integrated input"""
         key = event.key()
         cursor = self.output_area.textCursor()
 
+        # Log key press if debugging is enabled
+        if self.debug_enabled and self.logger:
+            self.logger.debug(
+                f"Key pressed: {key}, cursor position: {cursor.position()}, "
+                f"input_start_position: {self.input_start_position}, "
+                f"is_at_input_area: {cursor.position() >= self.input_start_position}"
+            )
+            # Also log the current text in the output area
+            current_text = self.output_area.toPlainText()
+            self.logger.debug(
+                f"Current text length: {len(current_text)}, last 50 chars: "
+                f"'{current_text[-50:] if len(current_text) > 50 else current_text}'"
+            )
+
         # Check if cursor is at the input area (after the input start position)
         is_at_input_area = cursor.position() >= self.input_start_position
+
+        # Prevent deleting the prompt or previous output
+        if key == Qt.Key.Key_Backspace and cursor.position() <= self.input_start_position:
+            if self.debug_enabled and self.logger:
+                self.logger.debug("Backspace blocked before input area")
+            event.accept()
+            return True
 
         if key == Qt.Key.Key_Up and is_at_input_area:
             # Previous command in history
@@ -495,6 +518,10 @@ class ShellWidget(QWidget):
                 self.history_index -= 1
                 # Update the current input area with the history command
                 self.update_input_area(self.command_history[self.history_index])
+            if self.debug_enabled and self.logger:
+                self.logger.debug(f"History UP pressed, current index: {self.history_index}")
+            event.accept()
+            return True
         elif key == Qt.Key.Key_Down and is_at_input_area:
             # Next command in history
             if self.history_index < len(self.command_history) - 1:
@@ -509,25 +536,59 @@ class ShellWidget(QWidget):
                     self.current_command = ""
                 else:
                     self.update_input_area("")
+            if self.debug_enabled and self.logger:
+                self.logger.debug(f"History DOWN pressed, current index: {self.history_index}")
+            event.accept()
+            return True
         elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and is_at_input_area:
             # Execute command when Enter is pressed in the input area
+            if self.debug_enabled and self.logger:
+                self.logger.debug("Enter key pressed in input area, executing command")
             self.execute_command()
+            # Prevent the default behavior (adding a newline)
+            event.accept()
+            return True
         elif key == Qt.Key.Key_C and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
             # Ctrl+C sends interrupt signal
+            if self.debug_enabled and self.logger:
+                self.logger.debug("Ctrl+C pressed, sending interrupt signal")
             self.terminal.write('\x03')  # Send SIGINT (Ctrl+C)
             event.accept()
+            return True
         elif key == Qt.Key.Key_L and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
             # Ctrl+L clears the screen
+            if self.debug_enabled and self.logger:
+                self.logger.debug("Ctrl+L pressed, clearing screen")
             self.clear_screen()
             event.accept()
+            return True
         elif is_at_input_area:
             # For all other keys when in the input area, allow normal input
-            super().keyPressEvent(event)
+            # BUT exclude Enter/Return keys since we handle those specially above
+            if key not in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if self.debug_enabled and self.logger:
+                    self.logger.debug(f"Processing normal key in input area: {event.text() if event.text() else key}")
+                return False  # Let QTextEdit handle normal typing
+            else:
+                # This shouldn't normally happen since Enter/Return in input area
+                # should be handled by the condition above, but log it just in case
+                if self.debug_enabled and self.logger:
+                    self.logger.debug("Enter key pressed but not in input area or condition not met")
+                event.accept()
+                return True
         else:
             # If not in input area, only allow navigation keys
             if key in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Left, Qt.Key.Key_Right,
                       Qt.Key.Key_PageUp, Qt.Key.Key_PageDown, Qt.Key.Key_Home, Qt.Key.Key_End):
-                super().keyPressEvent(event)
+                if self.debug_enabled and self.logger:
+                    self.logger.debug(f"Navigation key pressed: {key}")
+                return False  # Allow navigation
+            else:
+                # For keys not in allowed list when not in input area
+                if self.debug_enabled and self.logger:
+                    self.logger.debug(f"Key blocked (not in input area and not a navigation key): {key}")
+                event.accept()
+                return True
 
     def update_input_area(self, text):
         """Update only the input part of the text area"""
@@ -639,6 +700,17 @@ class MainWindow(QMainWindow):
                          "GUI Shell - A terminal emulator built with Python, PyQt6, and pywinpty")
 
 
+def setup_debug_logging(debug_file):
+    """Setup logging for debugging"""
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(debug_file, mode='w'),
+            logging.StreamHandler()  # This will also print to console
+        ]
+    )
+
 def main():
     app = QApplication(sys.argv)
 
@@ -652,15 +724,133 @@ def main():
     parser = argparse.ArgumentParser(description='GUI Shell with MSYS2 support')
     parser.add_argument('--shell', '-s', choices=['cmd', 'bash', 'auto'], default='auto',
                         help='Shell type to use: cmd, bash, or auto (default: auto)')
+    parser.add_argument('--eval', help='Command to evaluate in non-interactive mode')
+    parser.add_argument('--dump', action='store_true', help='Dump screen content to stdout in non-interactive mode')
+    parser.add_argument('--timeout', type=int, default=10, help='Timeout in seconds for non-interactive mode (default: 10)')
+    # Additional arguments for headless GUI operation
+    parser.add_argument('--headless-eval', help='Command to evaluate in headless GUI mode')
+    parser.add_argument('--headless-timeout', type=int, default=10, help='Timeout for headless GUI mode (default: 10)')
+    # Argument for debugging mode
+    parser.add_argument('--debug', help='Enable debug logging to specified file')
 
     args = parser.parse_args(sys.argv[1:])
 
-    # Create and show the main window with specified shell type
-    window = MainWindow(shell_type=args.shell)
-    window.show()
+    # Initialize debug logging if specified
+    if args.debug:
+        setup_debug_logging(args.debug)
 
-    # Run the application
-    sys.exit(app.exec())
+    # If eval is specified, run in non-interactive mode
+    if args.eval:
+        # Create a temporary terminal emulator
+        terminal = TerminalEmulator(cols=80, rows=24, shell_type=args.shell)
+        if not terminal.start():
+            print("Could not start terminal emulator", file=sys.stderr)
+            sys.exit(1)
+
+        # Create a thread to read terminal output
+        output_queue = queue.Queue()
+
+        def read_terminal():
+            start_time = time.time()
+            while time.time() - start_time < args.timeout and terminal.running:
+                try:
+                    output = terminal.read(1024)
+                    if output:
+                        output_queue.put(output)
+                    time.sleep(0.01)  # Small delay to prevent busy waiting
+                except Exception:
+                    break
+
+        import threading
+        reader_thread = threading.Thread(target=read_terminal)
+        reader_thread.daemon = True
+        reader_thread.start()
+
+        # Send the command with a newline
+        terminal.write(args.eval + '\n')
+
+        # Wait for output or timeout
+        reader_thread.join(timeout=args.timeout)
+        terminal.close()
+
+        # Collect and print all output
+        all_output = []
+        while not output_queue.empty():
+            all_output.append(output_queue.get_nowait())
+
+        final_output = ''.join(all_output)
+
+        if args.dump:
+            print(final_output)
+        else:
+            print(final_output.strip())
+
+        sys.exit(0)
+    elif args.headless_eval:
+        # Run in headless GUI mode - start GUI, execute command, dump output after timeout
+        window = MainWindow(shell_type=args.shell)
+        # Only show window if not in debug mode
+        if not args.debug:
+            window.show()
+
+        # Access the shell widget to send the command
+        shell_widget = window.shell_widget
+
+        # If debugging, set the debug file
+        if args.debug:
+            shell_widget.debug_enabled = True
+            shell_widget.debug_file = args.debug
+            shell_widget.logger = logging.getLogger(__name__)
+
+        # Schedule the command to be sent after a brief moment to allow GUI to initialize
+        def send_command():
+            # Get the current length of the output before sending the command
+            initial_text = shell_widget.output_area.toPlainText()
+            shell_widget.input_start_position = len(initial_text)
+
+            # Type the command
+            shell_widget.output_area.insertPlainText(args.headless_eval)
+
+            # Execute the command (this simulates pressing Enter)
+            shell_widget.execute_command()
+
+            # After the timeout, dump the screen content and exit
+            def dump_and_exit():
+                if args.dump:
+                    # For GUI mode, we get the content from the output area
+                    content = shell_widget.output_area.toPlainText()
+                    print(content)
+                else:
+                    content = shell_widget.output_area.toPlainText()
+                    print(content.strip())
+
+                # Close the application
+                app.quit()
+
+            # Use singleShot timer to delay the dump and exit
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(args.headless_timeout * 1000, dump_and_exit)
+
+        # Use singleShot timer to delay sending the command after GUI initialization
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(500, send_command)  # 500ms delay to allow GUI to initialize
+
+        # Run the application event loop
+        sys.exit(app.exec())
+    else:
+        # Create and show the main window with specified shell type for GUI mode
+        window = MainWindow(shell_type=args.shell)
+        window.show()
+
+        # If debugging, enable it on the shell widget
+        if args.debug:
+            shell_widget = window.shell_widget
+            shell_widget.debug_enabled = True
+            shell_widget.debug_file = args.debug
+            shell_widget.logger = logging.getLogger(__name__)
+
+        # Run the application
+        sys.exit(app.exec())
 
 
 if __name__ == '__main__':

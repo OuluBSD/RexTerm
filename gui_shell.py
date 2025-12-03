@@ -7,7 +7,7 @@ import html
 import time
 import logging
 from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QTextEdit, QLineEdit, QScrollBar, QMessageBox
-from PyQt6.QtCore import pyqtSignal, Qt, QThread, QEvent
+from PyQt6.QtCore import pyqtSignal, Qt, QThread, QEvent, QTimer
 from PyQt6.QtGui import QFont, QAction, QKeyEvent
 import winpty as pywinpty  # In MSYS2/MinGW environments, pywinpty is installed as winpty
 import signal
@@ -172,23 +172,21 @@ def ansi_to_html(text):
     return ''.join(result)
 
 
-import html
-
-
 class TerminalEmulator:
     """A wrapper for winpty to handle Windows terminal operations with pyte terminal emulation"""
 
-    def __init__(self, cols=80, rows=24, shell_type='cmd'):
+    def __init__(self, cols=80, rows=24, shell_type='cmd', history_lines=1000):
         self.cols = cols
         self.rows = rows
+        self.history_lines = history_lines
         self.running = False
         self.pty_process = None
         self.command_queue = queue.Queue()
         self.shell_type = shell_type  # 'cmd', 'bash', or 'auto'
         self.msys64_path = find_msys64_path() if shell_type in ['bash', 'auto'] else None
 
-        # Initialize pyte for proper terminal emulation
-        self.screen = pyte.Screen(cols, rows)
+        # Initialize pyte for proper terminal emulation with scrollback
+        self.screen = screens.HistoryScreen(cols, rows, history=history_lines)
         self.stream = pyte.Stream()
         self.stream.attach(self.screen)
 
@@ -210,6 +208,10 @@ class TerminalEmulator:
                 self.pty_process = pywinpty.ptyprocess.PtyProcess.spawn(['cmd.exe'])
 
             self.running = True
+            try:
+                self.pty_process.setwinsize(self.rows, self.cols)
+            except Exception as e:
+                print(f"Failed to set initial pty size: {e}")
             return True
         except Exception as e:
             print(f"Failed to start terminal: {e}")
@@ -251,9 +253,22 @@ class TerminalEmulator:
 
     def resize(self, cols, rows):
         """Resize the terminal"""
-        # Note: ptyprocess doesn't directly support resizing
         self.cols = cols
         self.rows = rows
+
+        # Resize underlying pty if possible
+        if self.pty_process:
+            try:
+                # Note: winpty expects (rows, cols) ordering
+                self.pty_process.setwinsize(rows, cols)
+            except Exception as e:
+                print(f"Resize error: {e}")
+
+        # Resize pyte screen to keep rendering in sync
+        try:
+            self.screen.resize(rows, cols)
+        except Exception as e:
+            print(f"pyte resize error: {e}")
 
     def close(self):
         """Close the terminal session"""
@@ -299,7 +314,7 @@ class TerminalThread(QThread):
 class ShellWidget(QWidget):
     """Main shell widget with terminal emulation"""
 
-    def __init__(self, shell_type='auto'):
+    def __init__(self, shell_type='auto', scrollback_lines=1000):
         super().__init__()
 
         # Buffer to handle partial lines from terminal (initialize before using append_output)
@@ -316,7 +331,7 @@ class ShellWidget(QWidget):
         self.clear_pending_input = False
 
         # Setup terminal emulator
-        self.terminal = TerminalEmulator(cols=80, rows=24, shell_type=shell_type)
+        self.terminal = TerminalEmulator(cols=80, rows=24, shell_type=shell_type, history_lines=scrollback_lines)
         if not self.terminal.start():
             raise Exception("Could not start terminal emulator")
 
@@ -324,6 +339,26 @@ class ShellWidget(QWidget):
         self.debug_enabled = False
         self.debug_file = None
         self.logger = None
+
+        # Precompute a color map for HTML rendering
+        self.color_map = {
+            'black': '#000000',
+            'red': '#cc0000',
+            'green': '#009900',
+            'yellow': '#999900',
+            'blue': '#0000cc',
+            'magenta': '#cc00cc',
+            'cyan': '#009999',
+            'white': '#cccccc',
+            'brightblack': '#555555',
+            'brightred': '#ff5555',
+            'brightgreen': '#55ff55',
+            'brightyellow': '#ffff55',
+            'brightblue': '#5555ff',
+            'brightmagenta': '#ff55ff',
+            'brightcyan': '#55ffff',
+            'brightwhite': '#ffffff'
+        }
 
         # Setup UI
         self.setup_ui()
@@ -339,6 +374,9 @@ class ShellWidget(QWidget):
 
         # Current command being edited
         self.current_command = ""
+
+        # Initial size sync once the widget has been laid out
+        QTimer.singleShot(0, self.update_terminal_size)
     
     def setup_ui(self):
         """Setup the user interface"""
@@ -373,6 +411,120 @@ class ShellWidget(QWidget):
         layout.addWidget(self.output_area)
 
         self.setLayout(layout)
+
+    def update_terminal_size(self):
+        """Resize the underlying terminal to match the visible area."""
+        if not self.output_area:
+            return
+
+        viewport = self.output_area.viewport()
+        if viewport.width() <= 0 or viewport.height() <= 0:
+            return
+
+        metrics = self.output_area.fontMetrics()
+        char_width = max(1, metrics.horizontalAdvance("M"))
+        char_height = max(1, metrics.lineSpacing())
+
+        new_cols = max(2, viewport.width() // char_width)
+        new_rows = max(2, viewport.height() // char_height)
+
+        if new_cols != self.terminal.cols or new_rows != self.terminal.rows:
+            self.terminal.resize(new_cols, new_rows)
+            # Re-render the screen to respect the new geometry
+            self.append_output("")
+
+    def _wrap_html(self, body: str) -> str:
+        """Wrap rendered HTML in a <pre> so whitespace is preserved."""
+        return (
+            "<pre style=\"margin:0; white-space: pre; font-family:'Courier New', monospace; font-size:10pt;\">"
+            f"{body}"
+            "</pre>"
+        )
+
+    def _style_for_char(self, char) -> str:
+        """Return CSS style string for a pyte character."""
+        fg = self.color_map.get(char.fg, None)
+        bg = self.color_map.get(char.bg, None)
+
+        # Handle reverse video
+        if getattr(char, "reverse", False):
+            fg, bg = bg, fg
+
+        styles = []
+        if fg:
+            styles.append(f"color:{fg}")
+        if bg:
+            styles.append(f"background-color:{bg}")
+        if getattr(char, "bold", False):
+            styles.append("font-weight:bold")
+        if getattr(char, "italics", False):
+            styles.append("font-style:italic")
+        if getattr(char, "underscore", False):
+            styles.append("text-decoration: underline")
+        return ";".join(styles)
+
+    def _render_line(self, line_map):
+        """Render a single pyte line map to plain text and HTML."""
+        plain_chars = []
+        html_parts = []
+        current_style = None
+
+        for col in range(self.terminal.screen.columns):
+            char = line_map[col]
+            ch = char.data if char.data is not None else " "
+            plain_chars.append(ch)
+
+            style = self._style_for_char(char) or None
+            if style != current_style:
+                if current_style is not None:
+                    html_parts.append("</span>")
+                if style:
+                    html_parts.append(f'<span style="{style}">')
+                current_style = style
+
+            html_parts.append(html.escape(ch))
+
+        if current_style is not None:
+            html_parts.append("</span>")
+
+        raw_line = "".join(plain_chars)
+        trimmed_plain = raw_line.rstrip()
+        trimmed_html = "".join(html_parts).rstrip()
+
+        # Preserve a trailing space when the line isn't empty so prompts stay aligned
+        if raw_line.endswith(" ") and trimmed_plain:
+            trimmed_plain += " "
+            trimmed_html += " "
+
+        return trimmed_plain, trimmed_html
+
+    def _render_screen(self):
+        """Render the pyte screen to both plain text and HTML strings."""
+        plain_lines = []
+        html_lines = []
+
+        screen = self.terminal.screen
+        line_sources = []
+
+        if isinstance(screen, screens.HistoryScreen):
+            line_sources.extend(list(screen.history.top))
+
+        for row in range(screen.lines):
+            line_sources.append(screen.buffer[row])
+
+        if isinstance(screen, screens.HistoryScreen) and screen.history.bottom:
+            line_sources.extend(list(screen.history.bottom))
+
+        for line in line_sources:
+            plain_line, html_line = self._render_line(line)
+            plain_lines.append(plain_line)
+            html_lines.append(html_line)
+
+        if not plain_lines:
+            plain_lines = [""]
+            html_lines = [""]
+
+        return "\n".join(plain_lines), "\n".join(html_lines)
     
     def append_output(self, text):
         """Append output to the text area using pyte for proper terminal rendering"""
@@ -401,32 +553,24 @@ class ShellWidget(QWidget):
             preserved_input = ""
             self.clear_pending_input = False
 
-        # Build display lines from the pyte screen, trim padding, and drop empty rows at top/bottom
-        display_lines = []
-        for line in self.terminal.screen.display:
-            # Trim padding but keep a single trailing space (to preserve '$ ' prompts)
-            trimmed = line.rstrip()
-            if line.endswith(" ") and trimmed:
-                trimmed += " "
-            display_lines.append(trimmed)
-        while display_lines and not display_lines[0]:
-            display_lines.pop(0)
-        while display_lines and not display_lines[-1]:
-            display_lines.pop()
-        if not display_lines:
-            display_lines = [""]
+        scrollbar = self.output_area.verticalScrollBar()
+        previous_scroll_value = scrollbar.value()
+        at_bottom = previous_scroll_value >= scrollbar.maximum()
 
-        # Plain text version for display and cursor math
-        display_text = "\n".join(display_lines)
+        display_text, display_html = self._render_screen()
         full_display_text = display_text
+        full_html = display_html
+
         if preserved_input:
             full_display_text += preserved_input
+            full_html += html.escape(preserved_input)
 
-        # Update the output area with the new content (plain text avoids HTML duplication issues)
-        self.output_area.setPlainText(full_display_text)
+        # Update the output area with the new content, preserving ANSI colors via HTML
+        self.output_area.setHtml(self._wrap_html(full_html))
 
         # Update the input start position to after the terminal output (in plain text)
-        self.input_start_position = len(display_text)
+        doc_text = self.output_area.toPlainText()
+        self.input_start_position = max(0, len(doc_text) - len(preserved_input))
 
         # Log the output text for debugging
         if self.debug_enabled and self.logger:
@@ -439,9 +583,11 @@ class ShellWidget(QWidget):
         self.output_area.setTextCursor(new_cursor)
         self.output_area.setFocus()
 
-        # Auto-scroll to bottom
-        scrollbar = self.output_area.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+        # Respect the user's scroll position: only stick to bottom if they were there
+        if at_bottom:
+            scrollbar.setValue(scrollbar.maximum())
+        else:
+            scrollbar.setValue(min(previous_scroll_value, scrollbar.maximum()))
     
     def execute_command(self):
         """Execute the command entered by the user"""
@@ -479,6 +625,11 @@ class ShellWidget(QWidget):
             return self.handle_key_press(event)
         return super().eventFilter(obj, event)
 
+    def resizeEvent(self, event):
+        """Keep terminal geometry in sync with widget size."""
+        super().resizeEvent(event)
+        self.update_terminal_size()
+
     def handle_key_press(self, event: QKeyEvent):
         """Handle key press events for terminal-like behavior with integrated input"""
         key = event.key()
@@ -500,6 +651,18 @@ class ShellWidget(QWidget):
 
         # Check if cursor is at the input area (after the input start position)
         is_at_input_area = cursor.position() >= self.input_start_position
+
+        navigation_keys = {
+            Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Left, Qt.Key.Key_Right,
+            Qt.Key.Key_PageUp, Qt.Key.Key_PageDown, Qt.Key.Key_Home, Qt.Key.Key_End
+        }
+
+        # If the cursor is outside the input area and a non-navigation key is pressed,
+        # move the cursor to the end so typing always happens at the prompt.
+        if not is_at_input_area and key not in navigation_keys:
+            cursor.movePosition(cursor.MoveOperation.End)
+            self.output_area.setTextCursor(cursor)
+            is_at_input_area = cursor.position() >= self.input_start_position
 
         # Prevent deleting the prompt or previous output
         if key == Qt.Key.Key_Backspace and cursor.position() <= self.input_start_position:
@@ -593,11 +756,11 @@ class ShellWidget(QWidget):
     def update_input_area(self, text):
         """Update only the input part of the text area"""
         # Get the display part (everything before the input)
-        display_text = "\n".join(self.terminal.screen.display).rstrip()
+        display_text, display_html = self._render_screen()
 
         # Set the full content: display + new input
-        full_content = display_text + text
-        self.output_area.setPlainText(full_content)
+        full_content_html = display_html + html.escape(text)
+        self.output_area.setHtml(self._wrap_html(full_content_html))
 
         # Position the cursor at the end of the content
         cursor = self.output_area.textCursor()
@@ -605,7 +768,8 @@ class ShellWidget(QWidget):
         self.output_area.setTextCursor(cursor)
 
         # Update input start position
-        self.input_start_position = len(display_text)
+        doc_text = self.output_area.toPlainText()
+        self.input_start_position = max(0, len(doc_text) - len(text))
     
     def clear_screen(self):
         """Clear the terminal output area"""
@@ -613,9 +777,9 @@ class ShellWidget(QWidget):
         self.terminal.screen.reset()
 
         # Update the display without input
-        display_text = "\n".join(self.terminal.screen.display).rstrip()
-        self.output_area.setPlainText(display_text)
-        self.input_start_position = len(display_text)
+        display_text, display_html = self._render_screen()
+        self.output_area.setHtml(self._wrap_html(display_html))
+        self.input_start_position = len(self.output_area.toPlainText())
 
         # Also send clear command to actual terminal process
         # Use \n instead of \r\n for Unix-like terminals
@@ -645,13 +809,13 @@ class ShellWidget(QWidget):
 class MainWindow(QMainWindow):
     """Main application window"""
 
-    def __init__(self, shell_type='auto'):
+    def __init__(self, shell_type='auto', scrollback_lines=1000):
         super().__init__()
         self.setWindowTitle("GUI Shell")
         self.setGeometry(100, 100, 800, 600)
 
         # Create and set the central widget
-        self.shell_widget = ShellWidget(shell_type=shell_type)
+        self.shell_widget = ShellWidget(shell_type=shell_type, scrollback_lines=scrollback_lines)
         self.setCentralWidget(self.shell_widget)
         
         # Create menu
@@ -732,6 +896,8 @@ def main():
     parser.add_argument('--headless-timeout', type=int, default=10, help='Timeout for headless GUI mode (default: 10)')
     # Argument for debugging mode
     parser.add_argument('--debug', help='Enable debug logging to specified file')
+    parser.add_argument('--scrollback', type=int, default=1000,
+                        help='Number of scrollback lines to keep in the terminal buffer (default: 1000)')
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -742,7 +908,7 @@ def main():
     # If eval is specified, run in non-interactive mode
     if args.eval:
         # Create a temporary terminal emulator
-        terminal = TerminalEmulator(cols=80, rows=24, shell_type=args.shell)
+        terminal = TerminalEmulator(cols=80, rows=24, shell_type=args.shell, history_lines=args.scrollback)
         if not terminal.start():
             print("Could not start terminal emulator", file=sys.stderr)
             sys.exit(1)
@@ -788,7 +954,7 @@ def main():
         sys.exit(0)
     elif args.headless_eval:
         # Run in headless GUI mode - start GUI, execute command, dump output after timeout
-        window = MainWindow(shell_type=args.shell)
+        window = MainWindow(shell_type=args.shell, scrollback_lines=args.scrollback)
         # Only show window if not in debug mode
         if not args.debug:
             window.show()
@@ -839,7 +1005,7 @@ def main():
         sys.exit(app.exec())
     else:
         # Create and show the main window with specified shell type for GUI mode
-        window = MainWindow(shell_type=args.shell)
+        window = MainWindow(shell_type=args.shell, scrollback_lines=args.scrollback)
         window.show()
 
         # If debugging, enable it on the shell widget

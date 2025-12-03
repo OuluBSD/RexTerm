@@ -330,6 +330,12 @@ class ShellWidget(QWidget):
         # Drop preserved input after commands so stale text doesn't linger
         self.clear_pending_input = False
 
+        # Track whether we're in an alternate screen (ncurses, full-screen apps)
+        self.in_alternate_screen = False
+
+        # Pick an Enter sequence suitable for the active shell
+        self.enter_sequence = '\n' if (self.terminal.shell_type in ['bash', 'auto'] and self.terminal.msys64_path) else '\r'
+
         # Setup terminal emulator
         self.terminal = TerminalEmulator(cols=80, rows=24, shell_type=shell_type, history_lines=scrollback_lines)
         if not self.terminal.start():
@@ -382,10 +388,9 @@ class ShellWidget(QWidget):
         """Setup the user interface"""
         layout = QVBoxLayout()
 
-        # Terminal output area - now will act as both output and input
+        # Terminal output area - read only; we forward keys to the PTY directly
         self.output_area = QTextEdit()
-        # Make it NOT read-only so users can type at the end
-        self.output_area.setReadOnly(False)
+        self.output_area.setReadOnly(True)
         # Route key events through our handler
         self.output_area.installEventFilter(self)
         self.output_area.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -488,15 +493,9 @@ class ShellWidget(QWidget):
             html_parts.append("</span>")
 
         raw_line = "".join(plain_chars)
-        trimmed_plain = raw_line.rstrip()
-        trimmed_html = "".join(html_parts).rstrip()
+        html_line = "".join(html_parts)
 
-        # Preserve a trailing space when the line isn't empty so prompts stay aligned
-        if raw_line.endswith(" ") and trimmed_plain:
-            trimmed_plain += " "
-            trimmed_html += " "
-
-        return trimmed_plain, trimmed_html
+        return raw_line, html_line
 
     def _render_screen(self):
         """Render the pyte screen to both plain text and HTML strings."""
@@ -520,18 +519,6 @@ class ShellWidget(QWidget):
             plain_lines.append(plain_line)
             html_lines.append(html_line)
 
-        # Remove leading/trailing empty lines so the input prompt sits just after visible content
-        while plain_lines and not plain_lines[0]:
-            plain_lines.pop(0)
-            html_lines.pop(0)
-        while plain_lines and not plain_lines[-1]:
-            plain_lines.pop()
-            html_lines.pop()
-
-        if not plain_lines:
-            plain_lines = [""]
-            html_lines = [""]
-
         return "\n".join(plain_lines), "\n".join(html_lines)
     
     def append_output(self, text):
@@ -543,42 +530,25 @@ class ShellWidget(QWidget):
             if text:
                 self.logger.debug(f"append_output raw text: {repr(text[:200])}")  # Log first 200 chars
 
-        # Get the current user input at the end (if any) and preserve it
-        full_text = self.output_area.toPlainText()
-        preserved_input = ""
-
-        # Store current user input for later restoration
-        if self.input_start_position < len(full_text):
-            preserved_input = full_text[self.input_start_position:]
-
-        # Log preserved input for debugging
-        if self.debug_enabled and self.logger:
-            self.logger.debug(f"Preserved input: '{preserved_input}'")
-            self.logger.debug(f"Input start position: {self.input_start_position}, Full text length: {len(full_text)}")
-
-        # If a command was just executed, drop preserved input so old command doesn't linger
-        if getattr(self, "clear_pending_input", False):
-            preserved_input = ""
-            self.clear_pending_input = False
+        # Track alternate screen toggles to better support full-screen ncurses apps
+        if text:
+            if any(seq in text for seq in ("\x1b[?1049h", "\x1b[?47h", "\x1b[?1047h")):
+                self.in_alternate_screen = True
+            if any(seq in text for seq in ("\x1b[?1049l", "\x1b[?47l", "\x1b[?1047l")):
+                self.in_alternate_screen = False
 
         scrollbar = self.output_area.verticalScrollBar()
         previous_scroll_value = scrollbar.value()
         at_bottom = previous_scroll_value >= scrollbar.maximum()
 
         display_text, display_html = self._render_screen()
-        full_display_text = display_text
-        full_html = display_html
-
-        if preserved_input:
-            full_display_text += preserved_input
-            full_html += html.escape(preserved_input)
 
         # Update the output area with the new content, preserving ANSI colors via HTML
-        self.output_area.setHtml(self._wrap_html(full_html))
+        self.output_area.setHtml(self._wrap_html(display_html))
 
         # Update the input start position to after the terminal output (in plain text)
         doc_text = self.output_area.toPlainText()
-        self.input_start_position = max(0, len(doc_text) - len(preserved_input))
+        self.input_start_position = len(doc_text)
 
         # Log the output text for debugging
         if self.debug_enabled and self.logger:
@@ -639,127 +609,153 @@ class ShellWidget(QWidget):
         self.update_terminal_size()
 
     def handle_key_press(self, event: QKeyEvent):
-        """Handle key press events for terminal-like behavior with integrated input"""
+        """Send key presses directly to the PTY for full terminal compatibility."""
         key = event.key()
+        modifiers = event.modifiers()
         cursor = self.output_area.textCursor()
 
-        # Log key press if debugging is enabled
-        if self.debug_enabled and self.logger:
-            self.logger.debug(
-                f"Key pressed: {key}, cursor position: {cursor.position()}, "
-                f"input_start_position: {self.input_start_position}, "
-                f"is_at_input_area: {cursor.position() >= self.input_start_position}"
-            )
-            # Also log the current text in the output area
-            current_text = self.output_area.toPlainText()
-            self.logger.debug(
-                f"Current text length: {len(current_text)}, last 50 chars: "
-                f"'{current_text[-50:] if len(current_text) > 50 else current_text}'"
-            )
+        # Allow normal copy shortcuts when text is selected
+        if cursor.hasSelection():
+            if (modifiers == Qt.KeyboardModifier.ControlModifier and key in (Qt.Key.Key_C, Qt.Key.Key_Insert)) or \
+               (modifiers == (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier) and key == Qt.Key.Key_C):
+                return False  # Let QTextEdit handle the copy
 
-        # Check if cursor is at the input area (after the input start position)
-        is_at_input_area = cursor.position() >= self.input_start_position
+        # Handle paste shortcuts: Ctrl+V or Shift+Insert
+        if (modifiers == Qt.KeyboardModifier.ControlModifier and key == Qt.Key.Key_V) or \
+           (modifiers == Qt.KeyboardModifier.ShiftModifier and key == Qt.Key.Key_Insert):
+            clipboard = QApplication.clipboard()
+            text = clipboard.text()
+            if text:
+                normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+                self.terminal.write(normalized)
+            event.accept()
+            return True
 
-        navigation_keys = {
-            Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Left, Qt.Key.Key_Right,
-            Qt.Key.Key_PageUp, Qt.Key.Key_PageDown, Qt.Key.Key_Home, Qt.Key.Key_End
+        # Helper to build CSI modifier parameters for arrows/home/end/page keys
+        def modifier_param():
+            param = 1
+            if modifiers & Qt.KeyboardModifier.ShiftModifier:
+                param += 1
+            if modifiers & Qt.KeyboardModifier.AltModifier:
+                param += 2
+            if modifiers & Qt.KeyboardModifier.ControlModifier:
+                param += 4
+            return None if param == 1 else param
+
+        def csi_with_mod(base_letter: str) -> str:
+            param = modifier_param()
+            if param:
+                return f"\x1b[1;{param}{base_letter}"
+            return f"\x1b[{base_letter}"
+
+        # Arrow keys, Home/End with modifier support
+        arrow_map = {
+            Qt.Key.Key_Up: "A",
+            Qt.Key.Key_Down: "B",
+            Qt.Key.Key_Right: "C",
+            Qt.Key.Key_Left: "D",
         }
-
-        # If the cursor is outside the input area and a non-navigation key is pressed,
-        # move the cursor to the end so typing always happens at the prompt.
-        if not is_at_input_area and key not in navigation_keys:
-            cursor.movePosition(cursor.MoveOperation.End)
-            self.output_area.setTextCursor(cursor)
-            is_at_input_area = cursor.position() >= self.input_start_position
-
-        # Prevent deleting the prompt or previous output
-        if key == Qt.Key.Key_Backspace and cursor.position() <= self.input_start_position:
-            if self.debug_enabled and self.logger:
-                self.logger.debug("Backspace blocked before input area")
+        if key in arrow_map:
+            self.terminal.write(csi_with_mod(arrow_map[key]))
             event.accept()
             return True
 
-        if key == Qt.Key.Key_Up and is_at_input_area:
-            # Previous command in history
-            if self.command_history and self.history_index > 0:
-                if self.history_index == len(self.command_history):
-                    # Store current input before navigating history
-                    current_input = self.output_area.toPlainText()[self.input_start_position:]
-                    self.current_command = current_input
-                self.history_index -= 1
-                # Update the current input area with the history command
-                self.update_input_area(self.command_history[self.history_index])
-            if self.debug_enabled and self.logger:
-                self.logger.debug(f"History UP pressed, current index: {self.history_index}")
+        if key == Qt.Key.Key_Home:
+            self.terminal.write(csi_with_mod("H"))
             event.accept()
             return True
-        elif key == Qt.Key.Key_Down and is_at_input_area:
-            # Next command in history
-            if self.history_index < len(self.command_history) - 1:
-                self.history_index += 1
-                # Update the current input area with the history command
-                self.update_input_area(self.command_history[self.history_index])
-            else:
-                # Clear input if at current command
-                self.history_index = len(self.command_history)
-                if self.current_command:
-                    self.update_input_area(self.current_command)
-                    self.current_command = ""
-                else:
-                    self.update_input_area("")
-            if self.debug_enabled and self.logger:
-                self.logger.debug(f"History DOWN pressed, current index: {self.history_index}")
+        if key == Qt.Key.Key_End:
+            self.terminal.write(csi_with_mod("F"))
             event.accept()
             return True
-        elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and is_at_input_area:
-            # Execute command when Enter is pressed in the input area
-            if self.debug_enabled and self.logger:
-                self.logger.debug("Enter key pressed in input area, executing command")
-            self.execute_command()
-            # Prevent the default behavior (adding a newline)
+
+        # Page keys with modifiers
+        if key == Qt.Key.Key_PageUp:
+            param = modifier_param()
+            seq = f"\x1b[5;{param}~" if param else "\x1b[5~"
+            self.terminal.write(seq)
             event.accept()
             return True
-        elif key == Qt.Key.Key_C and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
-            # Ctrl+C sends interrupt signal
-            if self.debug_enabled and self.logger:
-                self.logger.debug("Ctrl+C pressed, sending interrupt signal")
-            self.terminal.write('\x03')  # Send SIGINT (Ctrl+C)
+        if key == Qt.Key.Key_PageDown:
+            param = modifier_param()
+            seq = f"\x1b[6;{param}~" if param else "\x1b[6~"
+            self.terminal.write(seq)
             event.accept()
             return True
-        elif key == Qt.Key.Key_L and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
-            # Ctrl+L clears the screen
-            if self.debug_enabled and self.logger:
-                self.logger.debug("Ctrl+L pressed, clearing screen")
-            self.clear_screen()
+
+        # Delete/Insert
+        if key == Qt.Key.Key_Delete:
+            param = modifier_param()
+            seq = f"\x1b[3;{param}~" if param else "\x1b[3~"
+            self.terminal.write(seq)
             event.accept()
             return True
-        elif is_at_input_area:
-            # For all other keys when in the input area, allow normal input
-            # BUT exclude Enter/Return keys since we handle those specially above
-            if key not in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                if self.debug_enabled and self.logger:
-                    self.logger.debug(f"Processing normal key in input area: {event.text() if event.text() else key}")
-                return False  # Let QTextEdit handle normal typing
-            else:
-                # This shouldn't normally happen since Enter/Return in input area
-                # should be handled by the condition above, but log it just in case
-                if self.debug_enabled and self.logger:
-                    self.logger.debug("Enter key pressed but not in input area or condition not met")
-                event.accept()
-                return True
-        else:
-            # If not in input area, only allow navigation keys
-            if key in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Left, Qt.Key.Key_Right,
-                      Qt.Key.Key_PageUp, Qt.Key.Key_PageDown, Qt.Key.Key_Home, Qt.Key.Key_End):
-                if self.debug_enabled and self.logger:
-                    self.logger.debug(f"Navigation key pressed: {key}")
-                return False  # Allow navigation
-            else:
-                # For keys not in allowed list when not in input area
-                if self.debug_enabled and self.logger:
-                    self.logger.debug(f"Key blocked (not in input area and not a navigation key): {key}")
-                event.accept()
-                return True
+        if key == Qt.Key.Key_Insert:
+            param = modifier_param()
+            seq = f"\x1b[2;{param}~" if param else "\x1b[2~"
+            self.terminal.write(seq)
+            event.accept()
+            return True
+
+        # Function keys
+        function_map = {
+            Qt.Key.Key_F1: "\x1bOP",
+            Qt.Key.Key_F2: "\x1bOQ",
+            Qt.Key.Key_F3: "\x1bOR",
+            Qt.Key.Key_F4: "\x1bOS",
+            Qt.Key.Key_F5: "\x1b[15~",
+            Qt.Key.Key_F6: "\x1b[17~",
+            Qt.Key.Key_F7: "\x1b[18~",
+            Qt.Key.Key_F8: "\x1b[19~",
+            Qt.Key.Key_F9: "\x1b[20~",
+            Qt.Key.Key_F10: "\x1b[21~",
+            Qt.Key.Key_F11: "\x1b[23~",
+            Qt.Key.Key_F12: "\x1b[24~",
+        }
+        if key in function_map:
+            self.terminal.write(function_map[key])
+            event.accept()
+            return True
+
+        # Common control keys
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.terminal.write(self.enter_sequence)
+            event.accept()
+            return True
+        if key == Qt.Key.Key_Backspace:
+            self.terminal.write("\x7f")
+            event.accept()
+            return True
+        if key == Qt.Key.Key_Tab:
+            self.terminal.write("\t")
+            event.accept()
+            return True
+        if key == Qt.Key.Key_Backtab:
+            self.terminal.write("\x1b[Z")
+            event.accept()
+            return True
+        if key == Qt.Key.Key_Escape:
+            self.terminal.write("\x1b")
+            event.accept()
+            return True
+
+        # Ctrl+<letter> when Qt doesn't populate text()
+        if not event.text() and (modifiers & Qt.KeyboardModifier.ControlModifier) and Qt.Key.Key_A <= key <= Qt.Key.Key_Z:
+            ctrl_char = chr(key - Qt.Key.Key_A + 1)
+            self.terminal.write(ctrl_char)
+            event.accept()
+            return True
+
+        # Regular text (including control characters provided by Qt)
+        if event.text():
+            text = event.text()
+            if modifiers & Qt.KeyboardModifier.AltModifier and not text.startswith("\x1b"):
+                text = "\x1b" + text
+            self.terminal.write(text)
+            event.accept()
+            return True
+
+        return True
 
     def update_input_area(self, text):
         """Update only the input part of the text area"""
@@ -978,15 +974,9 @@ def main():
 
         # Schedule the command to be sent after a brief moment to allow GUI to initialize
         def send_command():
-            # Get the current length of the output before sending the command
-            initial_text = shell_widget.output_area.toPlainText()
-            shell_widget.input_start_position = len(initial_text)
-
-            # Type the command
-            shell_widget.output_area.insertPlainText(args.headless_eval)
-
-            # Execute the command (this simulates pressing Enter)
-            shell_widget.execute_command()
+            # Send the command directly to the PTY
+            if args.headless_eval:
+                shell_widget.terminal.write(args.headless_eval + '\n')
 
             # After the timeout, dump the screen content and exit
             def dump_and_exit():

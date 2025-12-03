@@ -476,17 +476,6 @@ class ShellWidget(QWidget):
             # Send command to terminal - use only \n which is standard for Unix-like terminals
             # This should help reduce duplicate prompts
             self.terminal.write(command + '\n')
-
-            # Immediately clear the input area by setting the current display content
-            # Adding the command to the display so user sees it was accepted
-            display_text = "\n".join(self.terminal.screen.display).rstrip()
-            self.output_area.setPlainText(display_text)
-            self.input_start_position = len(display_text)
-
-            # Position cursor at the end for next input
-            cursor = self.output_area.textCursor()
-            cursor.movePosition(cursor.MoveOperation.End)
-            self.output_area.setTextCursor(cursor)
     
     def keyPressEvent(self, event: QKeyEvent):
         """Handle key press events for terminal-like behavior with integrated input"""

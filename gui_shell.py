@@ -330,16 +330,16 @@ class ShellWidget(QWidget):
         # Drop preserved input after commands so stale text doesn't linger
         self.clear_pending_input = False
 
+        # Setup terminal emulator
+        self.terminal = TerminalEmulator(cols=80, rows=24, shell_type=shell_type, history_lines=scrollback_lines)
+        if not self.terminal.start():
+            raise Exception("Could not start terminal emulator")
+
         # Track whether we're in an alternate screen (ncurses, full-screen apps)
         self.in_alternate_screen = False
 
         # Pick an Enter sequence suitable for the active shell
         self.enter_sequence = '\n' if (self.terminal.shell_type in ['bash', 'auto'] and self.terminal.msys64_path) else '\r'
-
-        # Setup terminal emulator
-        self.terminal = TerminalEmulator(cols=80, rows=24, shell_type=shell_type, history_lines=scrollback_lines)
-        if not self.terminal.start():
-            raise Exception("Could not start terminal emulator")
 
         # Debugging attributes
         self.debug_enabled = False

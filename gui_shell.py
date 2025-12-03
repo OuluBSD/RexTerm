@@ -520,6 +520,14 @@ class ShellWidget(QWidget):
             plain_lines.append(plain_line)
             html_lines.append(html_line)
 
+        # Remove leading/trailing empty lines so the input prompt sits just after visible content
+        while plain_lines and not plain_lines[0]:
+            plain_lines.pop(0)
+            html_lines.pop(0)
+        while plain_lines and not plain_lines[-1]:
+            plain_lines.pop()
+            html_lines.pop()
+
         if not plain_lines:
             plain_lines = [""]
             html_lines = [""]

@@ -194,8 +194,9 @@ class TerminalEmulator:
         """Start the terminal session"""
         try:
             env_vars = os.environ.copy()
-            env_vars.setdefault("TERM", "xterm-256color")
-            env_vars.setdefault("COLORTERM", "truecolor")
+            # Advertise full-color capabilities to child apps
+            env_vars.setdefault("TERM", "xterm-direct")  # enables truecolor in ncurses/terminfo-aware apps
+            env_vars.setdefault("COLORTERM", "truecolor")  # many apps also check this hint
             env_vars.setdefault("TERM_PROGRAM", "dropterm")
             env_vars.setdefault("TERM_PROGRAM_VERSION", "0.1")
 

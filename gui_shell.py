@@ -6,6 +6,7 @@ import re
 import html
 import time
 import logging
+from dataclasses import dataclass, asdict
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -28,13 +29,94 @@ from PyQt6.QtWidgets import (
     QFontComboBox,
     QKeySequenceEdit,
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QThread, QEvent, QTimer
+from PyQt6.QtCore import pyqtSignal, Qt, QThread, QEvent, QTimer, QSettings
 from PyQt6.QtGui import QFont, QAction, QKeyEvent, QKeySequence
 import winpty as pywinpty  # In MSYS2/MinGW environments, pywinpty is installed as winpty
 import signal
 import winreg
 import pyte
 from pyte import streams, screens
+
+# Basic color themes for the terminal chrome (background/foreground)
+THEME_PRESETS = {
+    "Dark": {"background": "#000000", "foreground": "#cccccc"},
+    "Light": {"background": "#ffffff", "foreground": "#111111"},
+    "Solarized Dark": {"background": "#002b36", "foreground": "#93a1a1"},
+    "Solarized Light": {"background": "#fdf6e3", "foreground": "#657b83"},
+    "Dracula": {"background": "#282a36", "foreground": "#f8f8f2"},
+}
+
+
+@dataclass
+class AppSettings:
+    """Persisted user settings for the terminal application."""
+
+    font_family: str = "Courier New"
+    font_size: int = 10
+    window_transparency: int = 0  # 0-100%
+    always_on_top: bool = False
+    color_theme: str = "Dark"
+    cursor_blink: bool = True
+    default_shell: str = "auto"
+    scrollback_lines: int = 1000
+    quake_enabled: bool = False
+    quake_hotkey: str = "Ctrl+`"
+    quake_slide: bool = False
+    copy_shortcut: str = "Ctrl+Shift+C"
+    paste_shortcut: str = "Ctrl+Shift+V"
+    new_window_shortcut: str = "Ctrl+Shift+N"
+    mouse_reporting: bool = True
+    term_override: str | None = None
+    colorterm_value: str | None = "truecolor"
+
+    @classmethod
+    def load(cls) -> "AppSettings":
+        settings = QSettings("OuluBSD", "RexTerm")
+        return cls(
+            font_family=settings.value("font_family", cls.font_family),
+            font_size=int(settings.value("font_size", cls.font_size)),
+            window_transparency=int(settings.value("window_transparency", cls.window_transparency)),
+            always_on_top=settings.value("always_on_top", cls.always_on_top, type=bool),
+            color_theme=settings.value("color_theme", cls.color_theme),
+            cursor_blink=settings.value("cursor_blink", cls.cursor_blink, type=bool),
+            default_shell=settings.value("default_shell", cls.default_shell),
+            scrollback_lines=int(settings.value("scrollback_lines", cls.scrollback_lines)),
+            quake_enabled=settings.value("quake_enabled", cls.quake_enabled, type=bool),
+            quake_hotkey=settings.value("quake_hotkey", cls.quake_hotkey),
+            quake_slide=settings.value("quake_slide", cls.quake_slide, type=bool),
+            copy_shortcut=settings.value("copy_shortcut", cls.copy_shortcut),
+            paste_shortcut=settings.value("paste_shortcut", cls.paste_shortcut),
+            new_window_shortcut=settings.value("new_window_shortcut", cls.new_window_shortcut),
+            mouse_reporting=settings.value("mouse_reporting", cls.mouse_reporting, type=bool),
+            term_override=settings.value("term_override", cls.term_override),
+            colorterm_value=settings.value("colorterm_value", cls.colorterm_value),
+        )
+
+    def save(self):
+        settings = QSettings("OuluBSD", "RexTerm")
+        settings.setValue("font_family", self.font_family)
+        settings.setValue("font_size", self.font_size)
+        settings.setValue("window_transparency", self.window_transparency)
+        settings.setValue("always_on_top", self.always_on_top)
+        settings.setValue("color_theme", self.color_theme)
+        settings.setValue("cursor_blink", self.cursor_blink)
+        settings.setValue("default_shell", self.default_shell)
+        settings.setValue("scrollback_lines", self.scrollback_lines)
+        settings.setValue("quake_enabled", self.quake_enabled)
+        settings.setValue("quake_hotkey", self.quake_hotkey)
+        settings.setValue("quake_slide", self.quake_slide)
+        settings.setValue("copy_shortcut", self.copy_shortcut)
+        settings.setValue("paste_shortcut", self.paste_shortcut)
+        settings.setValue("new_window_shortcut", self.new_window_shortcut)
+        settings.setValue("mouse_reporting", self.mouse_reporting)
+        settings.setValue("term_override", self.term_override)
+        settings.setValue("colorterm_value", self.colorterm_value)
+
+    def copy(self) -> "AppSettings":
+        return AppSettings(**asdict(self))
+
+    def palette(self):
+        return THEME_PRESETS.get(self.color_theme, THEME_PRESETS["Dark"])
 
 
 def find_msys64_path():
@@ -352,8 +434,18 @@ class TerminalThread(QThread):
 class ShellWidget(QWidget):
     """Main shell widget with terminal emulation"""
 
-    def __init__(self, shell_type='auto', scrollback_lines=1000, term_override=None, colorterm_value="truecolor"):
+    def __init__(self, shell_type='auto', scrollback_lines=1000, term_override=None, colorterm_value="truecolor", settings: AppSettings | None = None):
         super().__init__()
+
+        self.settings = settings or AppSettings()
+
+        # Track visual prefs
+        self.font_family = self.settings.font_family
+        self.font_size = self.settings.font_size
+        palette = self.settings.palette()
+        self.base_bg = palette["background"]
+        self.base_fg = palette["foreground"]
+        self.cursor_blink = self.settings.cursor_blink
 
         # Buffer to handle partial lines from terminal (initialize before using append_output)
         self.output_buffer = ""
@@ -439,10 +531,11 @@ class ShellWidget(QWidget):
         self.output_area.installEventFilter(self)
         self.output_area.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.output_area.setFocus()
-        font = QFont("Courier New", 10)
+        font = QFont(self.font_family, self.font_size)
         self.output_area.setFont(font)
         # Hide the native caret since we render our own cursor block
         self.output_area.setCursorWidth(0)
+        self.output_area.setStyleSheet(f"background-color:{self.base_bg}; color:{self.base_fg};")
 
         # Make it act more like a terminal
         self.output_area.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
@@ -487,18 +580,45 @@ class ShellWidget(QWidget):
 
     def _wrap_html(self, body: str) -> str:
         """Wrap rendered HTML in a <pre> so whitespace is preserved."""
+        blink_rule = "animation: cursor-blink 1s steps(1, start) infinite;" if self.cursor_blink else "animation: none;"
         cursor_css = (
             "<style>"
-            ".cursor-block { animation: cursor-blink 1s steps(1, start) infinite; }"
+            f".cursor-block {{ {blink_rule} }}"
             "@keyframes cursor-blink { 0%,49% { opacity: 1; } 50%,100% { opacity: 0; } }"
             "</style>"
         )
         return (
             f"{cursor_css}"
-            "<pre style=\"margin:0; white-space: pre; font-family:'Courier New', monospace; font-size:10pt; background-color:#000000; color:#cccccc;\">"
+            f"<pre style=\"margin:0; white-space: pre; font-family:'{self.font_family}', monospace; font-size:{self.font_size}pt; background-color:{self.base_bg}; color:{self.base_fg};\">"
             f"{body}"
             "</pre>"
         )
+
+    def apply_settings(self, settings: AppSettings):
+        """Apply persisted settings to the terminal widget."""
+        self.settings = settings
+        self.font_family = settings.font_family
+        self.font_size = settings.font_size
+        palette = settings.palette()
+        self.base_bg = palette["background"]
+        self.base_fg = palette["foreground"]
+        self.cursor_blink = settings.cursor_blink
+
+        # Update font and colors on the text area
+        self.output_area.setFont(QFont(self.font_family, self.font_size))
+        self.output_area.setStyleSheet(f"background-color:{self.base_bg}; color:{self.base_fg};")
+
+        # Grow/shrink history buffer if needed
+        if settings.scrollback_lines != getattr(self.terminal, "history_lines", settings.scrollback_lines):
+            self.terminal.history_lines = settings.scrollback_lines
+            try:
+                self.terminal.screen.history.maxlen = settings.scrollback_lines
+            except Exception:
+                pass
+
+        # Re-render with new styling and recompute terminal size
+        self.append_output("")
+        self.update_terminal_size()
 
     def _css_color(self, value):
         """Convert pyte color tokens (named or hex) to CSS color strings."""
@@ -603,8 +723,8 @@ class ShellWidget(QWidget):
                     if part and not part.startswith("color:") and not part.startswith("background-color:")
                 ]
 
-                fg = self._css_color(getattr(char, "fg", None)) or "#cccccc"
-                bg = self._css_color(getattr(char, "bg", None)) or "#000000"
+                fg = self._css_color(getattr(char, "fg", None)) or self.base_fg
+                bg = self._css_color(getattr(char, "bg", None)) or self.base_bg
 
                 # Invert colors for the cursor block to make it stand out
                 cursor_styles = base_parts + [f"background-color:{fg}", f"color:{bg}"]
@@ -961,8 +1081,9 @@ class ShellWidget(QWidget):
 class SettingsDialog(QDialog):
     """Settings dialog with basic terminal options grouped by category."""
 
-    def __init__(self, parent=None):
+    def __init__(self, settings: AppSettings, parent=None):
         super().__init__(parent)
+        self.settings = settings.copy()
         self.setWindowTitle("Settings")
         self.resize(640, 520)
 
@@ -978,7 +1099,7 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(self.tabs)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)
         layout.addWidget(buttons)
@@ -988,36 +1109,37 @@ class SettingsDialog(QDialog):
     def _build_fonts_tab(self):
         widget = QWidget()
         form = QFormLayout(widget)
-        font_picker = QFontComboBox()
-        font_picker.setCurrentFont(QFont("Courier New"))
-        size_spin = QSpinBox()
-        size_spin.setRange(6, 48)
-        size_spin.setValue(10)
-        form.addRow("Font family", font_picker)
-        form.addRow("Size", size_spin)
+        self.font_picker = QFontComboBox()
+        self.font_picker.setCurrentFont(QFont(self.settings.font_family))
+        self.size_spin = QSpinBox()
+        self.size_spin.setRange(6, 48)
+        self.size_spin.setValue(self.settings.font_size)
+        form.addRow("Font family", self.font_picker)
+        form.addRow("Size", self.size_spin)
         return widget
 
     def _build_appearance_tab(self):
         widget = QWidget()
         form = QFormLayout(widget)
 
-        transparency_slider = QSlider(Qt.Orientation.Horizontal)
-        transparency_slider.setRange(0, 100)
-        transparency_slider.setValue(0)
-        transparency_label = QLabel("0%")
+        self.transparency_slider = QSlider(Qt.Orientation.Horizontal)
+        self.transparency_slider.setRange(0, 100)
+        self.transparency_slider.setValue(self.settings.window_transparency)
+        self.transparency_label = QLabel(f"{self.settings.window_transparency}%")
 
         def update_label(value):
-            transparency_label.setText(f"{value}%")
+            self.transparency_label.setText(f"{value}%")
 
-        transparency_slider.valueChanged.connect(update_label)
+        self.transparency_slider.valueChanged.connect(update_label)
 
         row = QHBoxLayout()
-        row.addWidget(transparency_slider)
-        row.addWidget(transparency_label)
+        row.addWidget(self.transparency_slider)
+        row.addWidget(self.transparency_label)
         form.addRow("Window transparency", row)
 
-        always_on_top = QCheckBox("Always on top")
-        form.addRow(always_on_top)
+        self.always_on_top = QCheckBox("Always on top")
+        self.always_on_top.setChecked(self.settings.always_on_top)
+        form.addRow(self.always_on_top)
 
         return widget
 
@@ -1025,15 +1147,17 @@ class SettingsDialog(QDialog):
         widget = QWidget()
         form = QFormLayout(widget)
 
-        enable_quake = QCheckBox("Enable Quake-style drop-down")
-        form.addRow(enable_quake)
+        self.enable_quake = QCheckBox("Enable Quake-style drop-down")
+        self.enable_quake.setChecked(self.settings.quake_enabled)
+        form.addRow(self.enable_quake)
 
-        hotkey_edit = QKeySequenceEdit()
-        hotkey_edit.setKeySequence(QKeySequence("Ctrl+`"))
-        form.addRow("Global hotkey", hotkey_edit)
+        self.hotkey_edit = QKeySequenceEdit()
+        self.hotkey_edit.setKeySequence(QKeySequence(self.settings.quake_hotkey))
+        form.addRow("Global hotkey", self.hotkey_edit)
 
-        slide_checkbox = QCheckBox("Slide down animation")
-        form.addRow(slide_checkbox)
+        self.slide_checkbox = QCheckBox("Slide down animation")
+        self.slide_checkbox.setChecked(self.settings.quake_slide)
+        form.addRow(self.slide_checkbox)
 
         return widget
 
@@ -1041,17 +1165,17 @@ class SettingsDialog(QDialog):
         widget = QWidget()
         form = QFormLayout(widget)
 
-        copy_seq = QKeySequenceEdit()
-        copy_seq.setKeySequence(QKeySequence("Ctrl+Shift+C"))
-        form.addRow("Copy", copy_seq)
+        self.copy_seq = QKeySequenceEdit()
+        self.copy_seq.setKeySequence(QKeySequence(self.settings.copy_shortcut))
+        form.addRow("Copy", self.copy_seq)
 
-        paste_seq = QKeySequenceEdit()
-        paste_seq.setKeySequence(QKeySequence("Ctrl+Shift+V"))
-        form.addRow("Paste", paste_seq)
+        self.paste_seq = QKeySequenceEdit()
+        self.paste_seq.setKeySequence(QKeySequence(self.settings.paste_shortcut))
+        form.addRow("Paste", self.paste_seq)
 
-        new_window_seq = QKeySequenceEdit()
-        new_window_seq.setKeySequence(QKeySequence("Ctrl+Shift+N"))
-        form.addRow("New window", new_window_seq)
+        self.new_window_seq = QKeySequenceEdit()
+        self.new_window_seq.setKeySequence(QKeySequence(self.settings.new_window_shortcut))
+        form.addRow("New window", self.new_window_seq)
 
         return widget
 
@@ -1059,13 +1183,16 @@ class SettingsDialog(QDialog):
         widget = QWidget()
         form = QFormLayout(widget)
 
-        theme_combo = QComboBox()
-        theme_combo.addItems(["Dark", "Light", "Solarized Dark", "Solarized Light", "Dracula"])
-        form.addRow("Theme", theme_combo)
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(["Dark", "Light", "Solarized Dark", "Solarized Light", "Dracula"])
+        index = self.theme_combo.findText(self.settings.color_theme)
+        if index >= 0:
+            self.theme_combo.setCurrentIndex(index)
+        form.addRow("Theme", self.theme_combo)
 
-        cursor_blink = QCheckBox("Blinking block cursor")
-        cursor_blink.setChecked(True)
-        form.addRow(cursor_blink)
+        self.cursor_blink_cb = QCheckBox("Blinking block cursor")
+        self.cursor_blink_cb.setChecked(self.settings.cursor_blink)
+        form.addRow(self.cursor_blink_cb)
 
         return widget
 
@@ -1073,32 +1200,56 @@ class SettingsDialog(QDialog):
         widget = QWidget()
         form = QFormLayout(widget)
 
-        default_shell = QComboBox()
-        default_shell.addItems(["auto", "bash", "cmd"])
-        form.addRow("Default shell", default_shell)
+        self.default_shell = QComboBox()
+        self.default_shell.addItems(["auto", "bash", "cmd"])
+        shell_index = self.default_shell.findText(self.settings.default_shell)
+        if shell_index >= 0:
+            self.default_shell.setCurrentIndex(shell_index)
+        form.addRow("Default shell", self.default_shell)
 
-        scrollback = QSpinBox()
-        scrollback.setRange(100, 100000)
-        scrollback.setValue(1000)
-        form.addRow("Scrollback lines", scrollback)
+        self.scrollback_spin = QSpinBox()
+        self.scrollback_spin.setRange(100, 100000)
+        self.scrollback_spin.setValue(self.settings.scrollback_lines)
+        form.addRow("Scrollback lines", self.scrollback_spin)
 
-        mouse_reporting = QCheckBox("Enable mouse reporting")
-        mouse_reporting.setChecked(True)
-        form.addRow(mouse_reporting)
+        self.mouse_reporting = QCheckBox("Enable mouse reporting")
+        self.mouse_reporting.setChecked(self.settings.mouse_reporting)
+        form.addRow(self.mouse_reporting)
 
         return widget
+
+    def build_settings(self) -> AppSettings:
+        """Collect the current dialog values into an AppSettings object."""
+        updated = self.settings.copy()
+        updated.font_family = self.font_picker.currentFont().family()
+        updated.font_size = self.size_spin.value()
+        updated.window_transparency = self.transparency_slider.value()
+        updated.always_on_top = self.always_on_top.isChecked()
+        updated.quake_enabled = self.enable_quake.isChecked()
+        updated.quake_hotkey = self.hotkey_edit.keySequence().toString()
+        updated.quake_slide = self.slide_checkbox.isChecked()
+        updated.copy_shortcut = self.copy_seq.keySequence().toString()
+        updated.paste_shortcut = self.paste_seq.keySequence().toString()
+        updated.new_window_shortcut = self.new_window_seq.keySequence().toString()
+        updated.color_theme = self.theme_combo.currentText()
+        updated.cursor_blink = self.cursor_blink_cb.isChecked()
+        updated.default_shell = self.default_shell.currentText()
+        updated.scrollback_lines = self.scrollback_spin.value()
+        updated.mouse_reporting = self.mouse_reporting.isChecked()
+        return updated
 
 
 class MainWindow(QMainWindow):
     """Main application window"""
 
-    def __init__(self, shell_type='auto', scrollback_lines=1000, term_override=None, colorterm_value="truecolor"):
+    def __init__(self, shell_type='auto', scrollback_lines=1000, term_override=None, colorterm_value="truecolor", settings: AppSettings | None = None):
         super().__init__()
+        self.settings = settings or AppSettings()
         self.setWindowTitle("GUI Shell")
         self.setGeometry(100, 100, 800, 600)
 
         # Create and set the central widget
-        self.shell_widget = ShellWidget(shell_type=shell_type, scrollback_lines=scrollback_lines, term_override=term_override, colorterm_value=colorterm_value)
+        self.shell_widget = ShellWidget(shell_type=shell_type, scrollback_lines=scrollback_lines, term_override=term_override, colorterm_value=colorterm_value, settings=self.settings)
         self.setCentralWidget(self.shell_widget)
         
         # Create menu
@@ -1106,6 +1257,8 @@ class MainWindow(QMainWindow):
         
         # Set up keyboard shortcuts
         self.setup_shortcuts()
+        # Apply saved window preferences
+        self.apply_window_settings()
     
     def create_menu(self):
         """Create the application menu"""
@@ -1140,6 +1293,16 @@ class MainWindow(QMainWindow):
         """Setup keyboard shortcuts"""
         # Clear screen with Ctrl+L (already handled in ShellWidget)
         pass
+
+    def apply_window_settings(self):
+        """Apply persisted settings to the window and shell widget."""
+        self.shell_widget.apply_settings(self.settings)
+
+        opacity = max(0.05, 1 - (self.settings.window_transparency / 100))
+        self.setWindowOpacity(opacity)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, self.settings.always_on_top)
+        if self.isVisible():
+            self.show()
     
     def clear_screen(self):
         """Clear the terminal screen"""
@@ -1147,8 +1310,11 @@ class MainWindow(QMainWindow):
 
     def open_settings(self):
         """Open the settings dialog"""
-        dialog = SettingsDialog(self)
-        dialog.exec()
+        dialog = SettingsDialog(self.settings, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.settings = dialog.build_settings()
+            self.settings.save()
+            self.apply_window_settings()
     
     def show_about(self):
         """Show about dialog"""
@@ -1171,14 +1337,18 @@ def main():
     app = QApplication(sys.argv)
 
     # Set application properties
+    app.setOrganizationName("OuluBSD")
     app.setApplicationName("GUI Shell")
     app.setApplicationVersion("1.0")
+
+    # Load persisted settings for defaults
+    settings = AppSettings.load()
 
     # Parse command-line arguments to determine shell type
     import argparse
 
     parser = argparse.ArgumentParser(description='GUI Shell with MSYS2 support')
-    parser.add_argument('--shell', '-s', choices=['cmd', 'bash', 'auto'], default='auto',
+    parser.add_argument('--shell', '-s', choices=['cmd', 'bash', 'auto'], default=settings.default_shell,
                         help='Shell type to use: cmd, bash, or auto (default: auto)')
     parser.add_argument('--eval', help='Command to evaluate in non-interactive mode')
     parser.add_argument('--dump', action='store_true', help='Dump screen content to stdout in non-interactive mode')
@@ -1188,13 +1358,21 @@ def main():
     parser.add_argument('--headless-timeout', type=int, default=10, help='Timeout for headless GUI mode (default: 10)')
     # Argument for debugging mode
     parser.add_argument('--debug', help='Enable debug logging to specified file')
-    parser.add_argument('--scrollback', type=int, default=1000,
+    parser.add_argument('--scrollback', type=int, default=settings.scrollback_lines,
                         help='Number of scrollback lines to keep in the terminal buffer (default: 1000)')
-    parser.add_argument('--term', help='TERM value to export to the child shell (default: inherit TERM or use xterm-256color)')
-    parser.add_argument('--colorterm', default='truecolor',
+    parser.add_argument('--term', default=settings.term_override, help='TERM value to export to the child shell (default: inherit TERM or use xterm-256color)')
+    parser.add_argument('--colorterm', default=settings.colorterm_value,
                         help='COLORTERM value to export (use "none" to omit, default: truecolor)')
 
     args = parser.parse_args(sys.argv[1:])
+
+    # Create a runtime settings copy that reflects CLI overrides without persisting them yet
+    session_settings = settings.copy()
+    session_settings.default_shell = args.shell
+    session_settings.scrollback_lines = args.scrollback
+    session_settings.term_override = args.term
+    effective_colorterm = None if (args.colorterm and args.colorterm.lower() == "none") else args.colorterm
+    session_settings.colorterm_value = effective_colorterm
 
     # Initialize debug logging if specified
     if args.debug:
@@ -1204,7 +1382,7 @@ def main():
     if args.eval:
         # Create a temporary terminal emulator
         terminal = TerminalEmulator(cols=80, rows=24, shell_type=args.shell, history_lines=args.scrollback,
-                                    term_override=args.term, colorterm_value=None if (args.colorterm and args.colorterm.lower() == "none") else args.colorterm)
+                                    term_override=args.term, colorterm_value=effective_colorterm)
         if not terminal.start():
             print("Could not start terminal emulator", file=sys.stderr)
             sys.exit(1)
@@ -1251,7 +1429,7 @@ def main():
     elif args.headless_eval:
         # Run in headless GUI mode - start GUI, execute command, dump output after timeout
         window = MainWindow(shell_type=args.shell, scrollback_lines=args.scrollback,
-                            term_override=args.term, colorterm_value=None if (args.colorterm and args.colorterm.lower() == "none") else args.colorterm)
+                            term_override=args.term, colorterm_value=effective_colorterm, settings=session_settings)
         # Only show window if not in debug mode
         if not args.debug:
             window.show()
@@ -1297,7 +1475,7 @@ def main():
     else:
         # Create and show the main window with specified shell type for GUI mode
         window = MainWindow(shell_type=args.shell, scrollback_lines=args.scrollback,
-                            term_override=args.term, colorterm_value=None if (args.colorterm and args.colorterm.lower() == "none") else args.colorterm)
+                            term_override=args.term, colorterm_value=effective_colorterm, settings=session_settings)
         window.show()
 
         # If debugging, enable it on the shell widget

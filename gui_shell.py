@@ -175,7 +175,7 @@ def ansi_to_html(text):
 class TerminalEmulator:
     """A wrapper for winpty to handle Windows terminal operations with pyte terminal emulation"""
 
-    def __init__(self, cols=80, rows=24, shell_type='cmd', history_lines=1000):
+    def __init__(self, cols=80, rows=24, shell_type='cmd', history_lines=1000, term_override=None, colorterm_value="truecolor"):
         self.cols = cols
         self.rows = rows
         self.history_lines = history_lines
@@ -184,6 +184,8 @@ class TerminalEmulator:
         self.command_queue = queue.Queue()
         self.shell_type = shell_type  # 'cmd', 'bash', or 'auto'
         self.msys64_path = find_msys64_path() if shell_type in ['bash', 'auto'] else None
+        self.term_override = term_override
+        self.colorterm_value = colorterm_value
 
         # Initialize pyte for proper terminal emulation with scrollback
         self.screen = screens.HistoryScreen(cols, rows, history=history_lines)
@@ -195,8 +197,10 @@ class TerminalEmulator:
         try:
             env_vars = os.environ.copy()
             # Advertise full-color capabilities to child apps
-            env_vars.setdefault("TERM", "xterm-direct")  # enables truecolor in ncurses/terminfo-aware apps
-            env_vars.setdefault("COLORTERM", "truecolor")  # many apps also check this hint
+            term_value = self.term_override or os.environ.get("TERM") or "xterm-256color"
+            env_vars["TERM"] = term_value
+            if self.colorterm_value and self.colorterm_value.lower() != "none":
+                env_vars["COLORTERM"] = self.colorterm_value
             env_vars.setdefault("TERM_PROGRAM", "dropterm")
             env_vars.setdefault("TERM_PROGRAM_VERSION", "0.1")
 
@@ -321,7 +325,7 @@ class TerminalThread(QThread):
 class ShellWidget(QWidget):
     """Main shell widget with terminal emulation"""
 
-    def __init__(self, shell_type='auto', scrollback_lines=1000):
+    def __init__(self, shell_type='auto', scrollback_lines=1000, term_override=None, colorterm_value="truecolor"):
         super().__init__()
 
         # Buffer to handle partial lines from terminal (initialize before using append_output)
@@ -338,7 +342,7 @@ class ShellWidget(QWidget):
         self.clear_pending_input = False
 
         # Setup terminal emulator
-        self.terminal = TerminalEmulator(cols=80, rows=24, shell_type=shell_type, history_lines=scrollback_lines)
+        self.terminal = TerminalEmulator(cols=80, rows=24, shell_type=shell_type, history_lines=scrollback_lines, term_override=term_override, colorterm_value=colorterm_value)
         if not self.terminal.start():
             raise Exception("Could not start terminal emulator")
 
@@ -888,13 +892,13 @@ class ShellWidget(QWidget):
 class MainWindow(QMainWindow):
     """Main application window"""
 
-    def __init__(self, shell_type='auto', scrollback_lines=1000):
+    def __init__(self, shell_type='auto', scrollback_lines=1000, term_override=None, colorterm_value="truecolor"):
         super().__init__()
         self.setWindowTitle("GUI Shell")
         self.setGeometry(100, 100, 800, 600)
 
         # Create and set the central widget
-        self.shell_widget = ShellWidget(shell_type=shell_type, scrollback_lines=scrollback_lines)
+        self.shell_widget = ShellWidget(shell_type=shell_type, scrollback_lines=scrollback_lines, term_override=term_override, colorterm_value=colorterm_value)
         self.setCentralWidget(self.shell_widget)
         
         # Create menu
@@ -977,6 +981,9 @@ def main():
     parser.add_argument('--debug', help='Enable debug logging to specified file')
     parser.add_argument('--scrollback', type=int, default=1000,
                         help='Number of scrollback lines to keep in the terminal buffer (default: 1000)')
+    parser.add_argument('--term', help='TERM value to export to the child shell (default: inherit TERM or use xterm-256color)')
+    parser.add_argument('--colorterm', default='truecolor',
+                        help='COLORTERM value to export (use "none" to omit, default: truecolor)')
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -987,7 +994,8 @@ def main():
     # If eval is specified, run in non-interactive mode
     if args.eval:
         # Create a temporary terminal emulator
-        terminal = TerminalEmulator(cols=80, rows=24, shell_type=args.shell, history_lines=args.scrollback)
+        terminal = TerminalEmulator(cols=80, rows=24, shell_type=args.shell, history_lines=args.scrollback,
+                                    term_override=args.term, colorterm_value=None if (args.colorterm and args.colorterm.lower() == "none") else args.colorterm)
         if not terminal.start():
             print("Could not start terminal emulator", file=sys.stderr)
             sys.exit(1)
@@ -1033,7 +1041,8 @@ def main():
         sys.exit(0)
     elif args.headless_eval:
         # Run in headless GUI mode - start GUI, execute command, dump output after timeout
-        window = MainWindow(shell_type=args.shell, scrollback_lines=args.scrollback)
+        window = MainWindow(shell_type=args.shell, scrollback_lines=args.scrollback,
+                            term_override=args.term, colorterm_value=None if (args.colorterm and args.colorterm.lower() == "none") else args.colorterm)
         # Only show window if not in debug mode
         if not args.debug:
             window.show()
@@ -1078,7 +1087,8 @@ def main():
         sys.exit(app.exec())
     else:
         # Create and show the main window with specified shell type for GUI mode
-        window = MainWindow(shell_type=args.shell, scrollback_lines=args.scrollback)
+        window = MainWindow(shell_type=args.shell, scrollback_lines=args.scrollback,
+                            term_override=args.term, colorterm_value=None if (args.colorterm and args.colorterm.lower() == "none") else args.colorterm)
         window.show()
 
         # If debugging, enable it on the shell widget

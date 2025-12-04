@@ -467,9 +467,11 @@ class ShellWidget(QWidget):
 
         # Track whether we're in an alternate screen (ncurses, full-screen apps)
         self.in_alternate_screen = False
+        self._alt_history_marker: tuple[int, int] | None = None
 
-        # Pick an Enter sequence suitable for the active shell
-        self.enter_sequence = '\n' if (self.terminal.shell_type in ['bash', 'auto'] and self.terminal.msys64_path) else '\r'
+        # Pick an Enter sequence suitable for the active shell; use CR so curses-style apps
+        # get a carriage return, which they expect for a line break.
+        self.enter_sequence = '\r'
 
         # Debugging attributes
         self.debug_enabled = False
@@ -759,7 +761,8 @@ class ShellWidget(QWidget):
         screen = self.terminal.screen
         line_sources = []
 
-        if isinstance(screen, screens.HistoryScreen):
+        history_active = isinstance(screen, screens.HistoryScreen) and not self.in_alternate_screen
+        if history_active:
             line_sources.extend(list(screen.history.top))
             cursor_row_offset = len(screen.history.top)
         else:
@@ -774,7 +777,7 @@ class ShellWidget(QWidget):
         for row in range(screen.lines):
             line_sources.append(screen.buffer[row])
 
-        if isinstance(screen, screens.HistoryScreen) and screen.history.bottom:
+        if history_active and screen.history.bottom:
             line_sources.extend(list(screen.history.bottom))
 
         if cursor_line_index is not None and cursor_line_index >= len(line_sources):
@@ -801,8 +804,21 @@ class ShellWidget(QWidget):
         # Track alternate screen toggles to better support full-screen ncurses apps
         if text:
             if any(seq in text for seq in ("\x1b[?1049h", "\x1b[?47h", "\x1b[?1047h")):
+                # Remember current scrollback size so we can drop alt-screen artifacts later
+                screen = self.terminal.screen
+                if isinstance(screen, screens.HistoryScreen):
+                    self._alt_history_marker = (len(screen.history.top), len(screen.history.bottom))
                 self.in_alternate_screen = True
             if any(seq in text for seq in ("\x1b[?1049l", "\x1b[?47l", "\x1b[?1047l")):
+                # Leaving alternate screen: prune any scrollback generated while it was active
+                screen = self.terminal.screen
+                if isinstance(screen, screens.HistoryScreen) and self._alt_history_marker:
+                    top_len, bottom_len = self._alt_history_marker
+                    while len(screen.history.top) > top_len:
+                        screen.history.top.pop()
+                    while len(screen.history.bottom) > bottom_len:
+                        screen.history.bottom.pop()
+                self._alt_history_marker = None
                 self.in_alternate_screen = False
 
         scrollbar = self.output_area.verticalScrollBar()
@@ -987,6 +1003,7 @@ class ShellWidget(QWidget):
 
         # Common control keys
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            # Send carriage return (most terminals translate CR to newline as needed)
             self.terminal.write(self.enter_sequence)
             event.accept()
             return True

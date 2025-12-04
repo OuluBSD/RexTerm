@@ -193,19 +193,25 @@ class TerminalEmulator:
     def start(self):
         """Start the terminal session"""
         try:
+            env_vars = os.environ.copy()
+            env_vars.setdefault("TERM", "xterm-256color")
+            env_vars.setdefault("COLORTERM", "truecolor")
+            env_vars.setdefault("TERM_PROGRAM", "dropterm")
+            env_vars.setdefault("TERM_PROGRAM_VERSION", "0.1")
+
             # Determine which shell to use
             if self.shell_type == 'bash' or (self.shell_type == 'auto' and self.msys64_path):
                 # Use MSYS2 bash
                 if self.msys64_path:
                     bash_path = os.path.join(self.msys64_path, "usr", "bin", "bash.exe")
                     # Use login shell to get full environment
-                    self.pty_process = pywinpty.ptyprocess.PtyProcess.spawn([bash_path, "--login", "-i"])
+                    self.pty_process = pywinpty.ptyprocess.PtyProcess.spawn([bash_path, "--login", "-i"], env=env_vars)
                 else:
                     # Fallback to cmd if MSYS64 path not found
-                    self.pty_process = pywinpty.ptyprocess.PtyProcess.spawn(['cmd.exe'])
+                    self.pty_process = pywinpty.ptyprocess.PtyProcess.spawn(['cmd.exe'], env=env_vars)
             else:
                 # Use cmd.exe as default
-                self.pty_process = pywinpty.ptyprocess.PtyProcess.spawn(['cmd.exe'])
+                self.pty_process = pywinpty.ptyprocess.PtyProcess.spawn(['cmd.exe'], env=env_vars)
 
             self.running = True
             try:

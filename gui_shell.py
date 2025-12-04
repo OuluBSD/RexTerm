@@ -6,6 +6,8 @@ import re
 import html
 import time
 import logging
+import ctypes
+from ctypes import wintypes
 from dataclasses import dataclass, asdict
 from PyQt6.QtWidgets import (
     QApplication,
@@ -28,14 +30,24 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox,
     QFontComboBox,
     QKeySequenceEdit,
+    QSystemTrayIcon,
+    QMenu,
+    QStyle,
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QThread, QEvent, QTimer, QSettings
-from PyQt6.QtGui import QFont, QAction, QKeyEvent, QKeySequence
+from PyQt6.QtCore import pyqtSignal, Qt, QThread, QEvent, QTimer, QSettings, QAbstractNativeEventFilter, QCoreApplication
+from PyQt6.QtGui import QFont, QAction, QKeyEvent, QKeySequence, QIcon
 import winpty as pywinpty  # In MSYS2/MinGW environments, pywinpty is installed as winpty
 import signal
 import winreg
 import pyte
 from pyte import streams, screens
+
+WM_HOTKEY = 0x0312
+MOD_ALT = 0x0001
+MOD_CONTROL = 0x0002
+MOD_SHIFT = 0x0004
+MOD_WIN = 0x0008
+GLOBAL_HOTKEY_ID = 1
 
 # Basic color themes for the terminal chrome (background/foreground)
 THEME_PRESETS = {
@@ -117,6 +129,95 @@ class AppSettings:
 
     def palette(self):
         return THEME_PRESETS.get(self.color_theme, THEME_PRESETS["Dark"])
+
+
+class HotkeyEventFilter(QAbstractNativeEventFilter):
+    """Receive WM_HOTKEY messages from Windows and dispatch them to a callback."""
+
+    def __init__(self, callback):
+        super().__init__()
+        self.callback = callback
+
+    def nativeEventFilter(self, eventType, message):
+        if eventType != "windows_generic_MSG":
+            return False, 0
+
+        try:
+            msg = wintypes.MSG.from_address(int(message))
+        except Exception:
+            return False, 0
+        if msg.message == WM_HOTKEY:
+            self.callback(msg.wParam)
+            return True, 0
+        return False, 0
+
+
+def key_string_to_vk(key: str) -> int | None:
+    """Map a textual key token (e.g., 'A', 'F1', '`') to a Windows virtual-key code."""
+    tok = key.upper()
+    if len(tok) == 1:
+        if 'A' <= tok <= 'Z':
+            return ord(tok)
+        if '0' <= tok <= '9':
+            return ord(tok)
+        if tok in ('`', '~'):
+            return 0xC0
+        if tok == '-':
+            return 0xBD
+        if tok == '=':
+            return 0xBB
+
+    if tok.startswith('F') and tok[1:].isdigit():
+        num = int(tok[1:])
+        if 1 <= num <= 24:
+            return 0x70 + (num - 1)
+
+    special_map = {
+        'SPACE': 0x20,
+        'TAB': 0x09,
+        'ESC': 0x1B,
+        'ESCAPE': 0x1B,
+        'ENTER': 0x0D,
+        'RETURN': 0x0D,
+        'BACKSPACE': 0x08,
+    }
+    return special_map.get(tok)
+
+
+def parse_hotkey_to_win(hotkey: str) -> tuple[int, int] | None:
+    """Parse a QKeySequence-style string into (modifiers, vk) for RegisterHotKey."""
+    seq = QKeySequence(hotkey)
+    try:
+        text = seq.toString(QKeySequence.Format.PortableText)  # PyQt6 6.5+
+    except AttributeError:
+        text = seq.toString()
+    if not text:
+        return None
+
+    parts = [p.strip() for p in text.split('+') if p.strip()]
+    mods = 0
+    key_token = None
+    for part in parts:
+        lower = part.lower()
+        if lower in ('ctrl', 'control', 'ctl'):
+            mods |= MOD_CONTROL
+        elif lower == 'alt':
+            mods |= MOD_ALT
+        elif lower == 'shift':
+            mods |= MOD_SHIFT
+        elif lower in ('meta', 'win', 'windows', 'super', 'command', 'cmd'):
+            mods |= MOD_WIN
+        else:
+            key_token = part
+
+    if key_token is None:
+        return None
+
+    vk = key_string_to_vk(key_token)
+    if vk is None:
+        return None
+
+    return mods, vk
 
 
 def find_msys64_path():
@@ -1264,11 +1365,15 @@ class MainWindow(QMainWindow):
         self.settings = settings or AppSettings()
         self.setWindowTitle("GUI Shell")
         self.setGeometry(100, 100, 800, 600)
+        self.hotkey_filter = HotkeyEventFilter(self._handle_hotkey)
+        self.hotkey_registered = False
+        self._native_filter_installed = False
+        self.tray_icon: QSystemTrayIcon | None = None
 
         # Create and set the central widget
         self.shell_widget = ShellWidget(shell_type=shell_type, scrollback_lines=scrollback_lines, term_override=term_override, colorterm_value=colorterm_value, settings=self.settings)
         self.setCentralWidget(self.shell_widget)
-        
+
         # Create menu
         self.create_menu()
         
@@ -1320,7 +1425,91 @@ class MainWindow(QMainWindow):
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, self.settings.always_on_top)
         if self.isVisible():
             self.show()
-    
+        self._ensure_tray_icon()
+        self._register_global_hotkey()
+        self._update_tray_visibility()
+
+    def _ensure_tray_icon(self):
+        """Create a tray icon so the app is reachable when hidden by the hotkey."""
+        if self.tray_icon is None:
+            icon = self.windowIcon()
+            if icon.isNull():
+                icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+            self.tray_icon = QSystemTrayIcon(icon, self)
+            menu = QMenu(self)
+            toggle_action = menu.addAction("Show/Hide")
+            toggle_action.triggered.connect(self._toggle_visibility)
+            quit_action = menu.addAction("Quit")
+            quit_action.triggered.connect(self._exit_from_tray)
+            self.tray_icon.setContextMenu(menu)
+            self.tray_icon.activated.connect(self._tray_activated)
+
+        self._update_tray_visibility()
+
+    def _update_tray_visibility(self):
+        """Only show the tray icon when the quake/global hotkey is enabled."""
+        if not self.tray_icon:
+            return
+        if self.settings.quake_enabled:
+            if not self.tray_icon.isVisible():
+                self.tray_icon.show()
+        else:
+            self.tray_icon.hide()
+
+    def _tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self._toggle_visibility()
+
+    def _exit_from_tray(self):
+        if self.tray_icon:
+            self.tray_icon.hide()
+        self.close()
+
+    def _toggle_visibility(self):
+        """Toggle show/hide for quake-style activation."""
+        if self.isVisible() and not self.isMinimized():
+            self.hide()
+        else:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+
+    def _handle_hotkey(self, hotkey_id):
+        if hotkey_id == GLOBAL_HOTKEY_ID and self.settings.quake_enabled:
+            self._toggle_visibility()
+
+    def _register_global_hotkey(self):
+        """Register the configured global hotkey with Windows."""
+        self._unregister_global_hotkey()
+        if not self.settings.quake_enabled:
+            return
+
+        parsed = parse_hotkey_to_win(self.settings.quake_hotkey)
+        if not parsed:
+            logging.warning("No hotkey set for quake mode; skipping registration.")
+            return
+
+        mods, vk = parsed
+
+        hwnd = int(self.winId())
+        if ctypes.windll.user32.RegisterHotKey(hwnd, GLOBAL_HOTKEY_ID, mods, vk):
+            if not self._native_filter_installed:
+                QCoreApplication.instance().installNativeEventFilter(self.hotkey_filter)
+                self._native_filter_installed = True
+            self.hotkey_registered = True
+        else:
+            logging.warning("Failed to register global hotkey '%s'", self.settings.quake_hotkey)
+
+    def _unregister_global_hotkey(self):
+        """Unregister any previously registered hotkey and remove native filter."""
+        if self.hotkey_registered:
+            ctypes.windll.user32.UnregisterHotKey(int(self.winId()), GLOBAL_HOTKEY_ID)
+            self.hotkey_registered = False
+
+        if self._native_filter_installed and not self.hotkey_registered:
+            QCoreApplication.instance().removeNativeEventFilter(self.hotkey_filter)
+            self._native_filter_installed = False
+
     def clear_screen(self):
         """Clear the terminal screen"""
         self.shell_widget.clear_screen()
@@ -1335,8 +1524,15 @@ class MainWindow(QMainWindow):
     
     def show_about(self):
         """Show about dialog"""
-        QMessageBox.about(self, "About GUI Shell", 
+        QMessageBox.about(self, "About GUI Shell",
                          "GUI Shell - A terminal emulator built with Python, PyQt6, and pywinpty")
+
+    def closeEvent(self, event):
+        """Unregister hotkeys and hide the tray icon on exit."""
+        self._unregister_global_hotkey()
+        if self.tray_icon:
+            self.tray_icon.hide()
+        super().closeEvent(event)
 
 
 def setup_debug_logging(debug_file):

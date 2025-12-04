@@ -197,12 +197,18 @@ class TerminalEmulator:
         try:
             env_vars = os.environ.copy()
             # Advertise full-color capabilities to child apps
-            term_value = self.term_override or os.environ.get("TERM") or "xterm-256color"
+            term_value = self.term_override or "xterm-256color"
             env_vars["TERM"] = term_value
             if self.colorterm_value and self.colorterm_value.lower() != "none":
                 env_vars["COLORTERM"] = self.colorterm_value
             env_vars.setdefault("TERM_PROGRAM", "dropterm")
             env_vars.setdefault("TERM_PROGRAM_VERSION", "0.1")
+
+            # Point to MSYS2 terminfo so 256/truecolor entries are discoverable
+            if self.msys64_path:
+                terminfo_path = os.path.join(self.msys64_path, "usr", "share", "terminfo")
+                env_vars.setdefault("TERMINFO", terminfo_path)
+                env_vars.setdefault("TERMINFO_DIRS", terminfo_path)
 
             # Determine which shell to use
             if self.shell_type == 'bash' or (self.shell_type == 'auto' and self.msys64_path):

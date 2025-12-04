@@ -6,9 +6,30 @@ import re
 import html
 import time
 import logging
-from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QTextEdit, QLineEdit, QScrollBar, QMessageBox
+from PyQt6.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QVBoxLayout,
+    QWidget,
+    QTextEdit,
+    QLineEdit,
+    QScrollBar,
+    QMessageBox,
+    QDialog,
+    QTabWidget,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QComboBox,
+    QCheckBox,
+    QSpinBox,
+    QSlider,
+    QDialogButtonBox,
+    QFontComboBox,
+    QKeySequenceEdit,
+)
 from PyQt6.QtCore import pyqtSignal, Qt, QThread, QEvent, QTimer
-from PyQt6.QtGui import QFont, QAction, QKeyEvent
+from PyQt6.QtGui import QFont, QAction, QKeyEvent, QKeySequence
 import winpty as pywinpty  # In MSYS2/MinGW environments, pywinpty is installed as winpty
 import signal
 import winreg
@@ -935,7 +956,138 @@ class ShellWidget(QWidget):
         self.terminal_thread.stop()
         self.terminal.close()
         event.accept()
-        
+
+
+class SettingsDialog(QDialog):
+    """Settings dialog with basic terminal options grouped by category."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        self.resize(640, 520)
+
+        layout = QVBoxLayout()
+        self.tabs = QTabWidget()
+
+        self.tabs.addTab(self._build_fonts_tab(), "Fonts")
+        self.tabs.addTab(self._build_appearance_tab(), "Appearance")
+        self.tabs.addTab(self._build_quake_tab(), "Quake Mode")
+        self.tabs.addTab(self._build_shortcuts_tab(), "Shortcuts")
+        self.tabs.addTab(self._build_colors_tab(), "Color Theme")
+        self.tabs.addTab(self._build_terminal_tab(), "Terminal")
+
+        layout.addWidget(self.tabs)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+        self.setLayout(layout)
+
+    def _build_fonts_tab(self):
+        widget = QWidget()
+        form = QFormLayout(widget)
+        font_picker = QFontComboBox()
+        font_picker.setCurrentFont(QFont("Courier New"))
+        size_spin = QSpinBox()
+        size_spin.setRange(6, 48)
+        size_spin.setValue(10)
+        form.addRow("Font family", font_picker)
+        form.addRow("Size", size_spin)
+        return widget
+
+    def _build_appearance_tab(self):
+        widget = QWidget()
+        form = QFormLayout(widget)
+
+        transparency_slider = QSlider(Qt.Orientation.Horizontal)
+        transparency_slider.setRange(0, 100)
+        transparency_slider.setValue(0)
+        transparency_label = QLabel("0%")
+
+        def update_label(value):
+            transparency_label.setText(f"{value}%")
+
+        transparency_slider.valueChanged.connect(update_label)
+
+        row = QHBoxLayout()
+        row.addWidget(transparency_slider)
+        row.addWidget(transparency_label)
+        form.addRow("Window transparency", row)
+
+        always_on_top = QCheckBox("Always on top")
+        form.addRow(always_on_top)
+
+        return widget
+
+    def _build_quake_tab(self):
+        widget = QWidget()
+        form = QFormLayout(widget)
+
+        enable_quake = QCheckBox("Enable Quake-style drop-down")
+        form.addRow(enable_quake)
+
+        hotkey_edit = QKeySequenceEdit()
+        hotkey_edit.setKeySequence(QKeySequence("Ctrl+`"))
+        form.addRow("Global hotkey", hotkey_edit)
+
+        slide_checkbox = QCheckBox("Slide down animation")
+        form.addRow(slide_checkbox)
+
+        return widget
+
+    def _build_shortcuts_tab(self):
+        widget = QWidget()
+        form = QFormLayout(widget)
+
+        copy_seq = QKeySequenceEdit()
+        copy_seq.setKeySequence(QKeySequence("Ctrl+Shift+C"))
+        form.addRow("Copy", copy_seq)
+
+        paste_seq = QKeySequenceEdit()
+        paste_seq.setKeySequence(QKeySequence("Ctrl+Shift+V"))
+        form.addRow("Paste", paste_seq)
+
+        new_window_seq = QKeySequenceEdit()
+        new_window_seq.setKeySequence(QKeySequence("Ctrl+Shift+N"))
+        form.addRow("New window", new_window_seq)
+
+        return widget
+
+    def _build_colors_tab(self):
+        widget = QWidget()
+        form = QFormLayout(widget)
+
+        theme_combo = QComboBox()
+        theme_combo.addItems(["Dark", "Light", "Solarized Dark", "Solarized Light", "Dracula"])
+        form.addRow("Theme", theme_combo)
+
+        cursor_blink = QCheckBox("Blinking block cursor")
+        cursor_blink.setChecked(True)
+        form.addRow(cursor_blink)
+
+        return widget
+
+    def _build_terminal_tab(self):
+        widget = QWidget()
+        form = QFormLayout(widget)
+
+        default_shell = QComboBox()
+        default_shell.addItems(["auto", "bash", "cmd"])
+        form.addRow("Default shell", default_shell)
+
+        scrollback = QSpinBox()
+        scrollback.setRange(100, 100000)
+        scrollback.setValue(1000)
+        form.addRow("Scrollback lines", scrollback)
+
+        mouse_reporting = QCheckBox("Enable mouse reporting")
+        mouse_reporting.setChecked(True)
+        form.addRow(mouse_reporting)
+
+        return widget
+
 
 class MainWindow(QMainWindow):
     """Main application window"""
@@ -962,6 +1114,10 @@ class MainWindow(QMainWindow):
         # File menu
         file_menu = menubar.addMenu('File')
         
+        settings_action = QAction('Settings...', self)
+        settings_action.triggered.connect(self.open_settings)
+        file_menu.addAction(settings_action)
+
         exit_action = QAction('Exit', self)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
@@ -988,6 +1144,11 @@ class MainWindow(QMainWindow):
     def clear_screen(self):
         """Clear the terminal screen"""
         self.shell_widget.clear_screen()
+
+    def open_settings(self):
+        """Open the settings dialog"""
+        dialog = SettingsDialog(self)
+        dialog.exec()
     
     def show_about(self):
         """Show about dialog"""

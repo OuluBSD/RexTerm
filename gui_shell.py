@@ -380,6 +380,8 @@ class ShellWidget(QWidget):
             'brightcyan': '#55ffff',
             'brightwhite': '#ffffff'
         }
+        # Build a full xterm 0-255 palette for numeric color indices
+        self.xterm_palette = self._build_xterm_palette()
 
         # Setup UI
         self.setup_ui()
@@ -476,6 +478,17 @@ class ShellWidget(QWidget):
         if not value or value == "default":
             return None
 
+        # Handle numeric 0-255 indices
+        if isinstance(value, int):
+            return self.xterm_palette.get(value)
+        if isinstance(value, str) and value.isdigit():
+            try:
+                idx = int(value, 10)
+                if 0 <= idx <= 255:
+                    return self.xterm_palette.get(idx)
+            except ValueError:
+                pass
+
         if isinstance(value, str):
             if value.startswith("#") and len(value) == 7:
                 return value.lower()
@@ -507,6 +520,35 @@ class ShellWidget(QWidget):
         if getattr(char, "underscore", False):
             styles.append("text-decoration: underline")
         return ";".join(styles)
+
+    def _build_xterm_palette(self):
+        """Return a dict mapping xterm 0-255 color indices to hex strings."""
+        palette = {}
+        # Standard 0-15 colors (xterm defaults)
+        base16 = [
+            (0, 0, 0), (205, 0, 0), (0, 205, 0), (205, 205, 0),
+            (0, 0, 238), (205, 0, 205), (0, 205, 205), (229, 229, 229),
+            (127, 127, 127), (255, 0, 0), (0, 255, 0), (255, 255, 0),
+            (92, 92, 255), (255, 0, 255), (0, 255, 255), (255, 255, 255),
+        ]
+        for idx, (r, g, b) in enumerate(base16):
+            palette[idx] = f"#{r:02x}{g:02x}{b:02x}"
+
+        # 6x6x6 color cube (16-231)
+        steps = [0, 95, 135, 175, 215, 255]
+        idx = 16
+        for r in steps:
+            for g in steps:
+                for b in steps:
+                    palette[idx] = f"#{r:02x}{g:02x}{b:02x}"
+                    idx += 1
+
+        # Grayscale ramp (232-255)
+        for i in range(24):
+            level = 8 + i * 10
+            palette[232 + i] = f"#{level:02x}{level:02x}{level:02x}"
+
+        return palette
 
     def _render_line(self, line_map, cursor_col=None):
         """Render a single pyte line map to plain text and HTML."""

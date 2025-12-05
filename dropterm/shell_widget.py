@@ -48,6 +48,9 @@ class ShellWidget(QWidget):
         # Drop preserved input after commands so stale text doesn't linger
         self.clear_pending_input = False
 
+        # Track application keypad mode state for ncurses apps
+        self.application_mode = False
+
         # Set default shell type based on platform - 'bash' is more appropriate for Linux
         effective_shell_type = shell_type if shell_type != 'auto' else ('bash' if sys.platform != 'win32' else 'auto')
 
@@ -357,6 +360,12 @@ class ShellWidget(QWidget):
                 self.logger.debug(f"append_output raw text: {repr(text[:200])}")
 
         if text:
+            # Detect application keypad mode changes (DECCKM - DEC Cursor Keys Mode and DECKPAM/DECKPNM - Application/Normal Keypad Mode)
+            if "\x1b[?1h" in text or "\x1b[?66h" in text:  # Application cursor keys or Application keypad mode
+                self.application_mode = True
+            if "\x1b[?1l" in text or "\x1b[?66l" in text:  # Normal cursor keys or Normal keypad mode
+                self.application_mode = False
+
             if any(seq in text for seq in ("\x1b[?1049h", "\x1b[?47h", "\x1b[?1047h")):
                 screen = self.terminal.screen
                 if isinstance(screen, screens.HistoryScreen):
@@ -516,23 +525,43 @@ class ShellWidget(QWidget):
                 return f"\x1b[1;{param}{base_letter}"
             return f"\x1b[{base_letter}"
 
-        arrow_map = {
+        arrow_map_app = {  # Application mode sequences
+            Qt.Key.Key_Up: "\x1bOA",
+            Qt.Key.Key_Down: "\x1bOB",
+            Qt.Key.Key_Right: "\x1bOC",
+            Qt.Key.Key_Left: "\x1bOD",
+        }
+
+        arrow_map_normal = {  # Normal mode sequences
             Qt.Key.Key_Up: "A",
             Qt.Key.Key_Down: "B",
             Qt.Key.Key_Right: "C",
             Qt.Key.Key_Left: "D",
         }
-        if key in arrow_map:
-            self.terminal.write(csi_with_mod(arrow_map[key]))
+
+        if key in arrow_map_normal:
+            # For ncurses applications, we may need to send application mode sequences
+            # Check if terminal is in application mode based on escape sequence tracking
+            if self.application_mode:
+                self.terminal.write(arrow_map_app[key])
+            else:
+                self.terminal.write(csi_with_mod(arrow_map_normal[key]))
             event.accept()
             return True
 
+        # Handle Home/End keys with application mode consideration
         if key == Qt.Key.Key_Home:
-            self.terminal.write(csi_with_mod("H"))
+            if self.application_mode:
+                self.terminal.write("\x1bOH")  # Application mode sequence
+            else:
+                self.terminal.write(csi_with_mod("H"))  # Normal sequence
             event.accept()
             return True
         if key == Qt.Key.Key_End:
-            self.terminal.write(csi_with_mod("F"))
+            if self.application_mode:
+                self.terminal.write("\x1bOF")  # Application mode sequence
+            else:
+                self.terminal.write(csi_with_mod("F"))  # Normal sequence
             event.accept()
             return True
 

@@ -154,6 +154,26 @@ class SettingsDialog(QDialog):
         self.split_vertical_seq.setKeySequence(QKeySequence(self.settings.split_vertical_shortcut))
         form.addRow("Split vertical", self.split_vertical_seq)
 
+        self.next_tab_seq = QKeySequenceEdit()
+        self.next_tab_seq.setKeySequence(QKeySequence(self.settings.next_tab_shortcut))
+        form.addRow("Next tab", self.next_tab_seq)
+
+        self.previous_tab_seq = QKeySequenceEdit()
+        self.previous_tab_seq.setKeySequence(QKeySequence(self.settings.previous_tab_shortcut))
+        form.addRow("Previous tab", self.previous_tab_seq)
+
+        self.switch_terminal_seq = QKeySequenceEdit()
+        self.switch_terminal_seq.setKeySequence(QKeySequence(self.settings.switch_terminal_shortcut))
+        form.addRow("Switch terminal", self.switch_terminal_seq)
+
+        self.switch_terminal_reverse_seq = QKeySequenceEdit()
+        self.switch_terminal_reverse_seq.setKeySequence(QKeySequence(self.settings.switch_terminal_reverse_shortcut))
+        form.addRow("Switch terminal (reverse)", self.switch_terminal_reverse_seq)
+
+        self.close_tab_seq = QKeySequenceEdit()
+        self.close_tab_seq.setKeySequence(QKeySequence(self.settings.close_tab_shortcut))
+        form.addRow("Close tab", self.close_tab_seq)
+
         return widget
 
     def _build_colors_tab(self):
@@ -213,6 +233,11 @@ class SettingsDialog(QDialog):
         updated.quake_resize_down_shortcut = self.quake_shorter_seq.keySequence().toString()
         updated.split_horizontal_shortcut = self.split_horizontal_seq.keySequence().toString()
         updated.split_vertical_shortcut = self.split_vertical_seq.keySequence().toString()
+        updated.next_tab_shortcut = self.next_tab_seq.keySequence().toString()
+        updated.previous_tab_shortcut = self.previous_tab_seq.keySequence().toString()
+        updated.switch_terminal_shortcut = self.switch_terminal_seq.keySequence().toString()
+        updated.switch_terminal_reverse_shortcut = self.switch_terminal_reverse_seq.keySequence().toString()
+        updated.close_tab_shortcut = self.close_tab_seq.keySequence().toString()
         updated.color_theme = self.theme_combo.currentText()
         updated.cursor_blink = self.cursor_blink_cb.isChecked()
         updated.default_shell = self.default_shell.currentText()

@@ -36,6 +36,11 @@ class AppSettings:
     new_tab_shortcut: str = "Ctrl+T"
     split_horizontal_shortcut: str = "Ctrl+-"
     split_vertical_shortcut: str = "Ctrl+Shift+-"
+    next_tab_shortcut: str = "Ctrl+Right"
+    previous_tab_shortcut: str = "Ctrl+Left"
+    switch_terminal_shortcut: str = "Ctrl+Tab"
+    switch_terminal_reverse_shortcut: str = "Ctrl+Shift+Tab"
+    close_tab_shortcut: str = "Ctrl+Shift+W"
     mouse_reporting: bool = True
     term_override: str | None = None
     colorterm_value: str | None = "truecolor"
@@ -64,6 +69,11 @@ class AppSettings:
             new_tab_shortcut=settings.value("new_tab_shortcut", cls.new_tab_shortcut),
             split_horizontal_shortcut=settings.value("split_horizontal_shortcut", cls.split_horizontal_shortcut),
             split_vertical_shortcut=settings.value("split_vertical_shortcut", cls.split_vertical_shortcut),
+            next_tab_shortcut=settings.value("next_tab_shortcut", cls.next_tab_shortcut),
+            previous_tab_shortcut=settings.value("previous_tab_shortcut", cls.previous_tab_shortcut),
+            switch_terminal_shortcut=settings.value("switch_terminal_shortcut", cls.switch_terminal_shortcut),
+            switch_terminal_reverse_shortcut=settings.value("switch_terminal_reverse_shortcut", cls.switch_terminal_reverse_shortcut),
+            close_tab_shortcut=settings.value("close_tab_shortcut", cls.close_tab_shortcut),
             mouse_reporting=settings.value("mouse_reporting", cls.mouse_reporting, type=bool),
             term_override=settings.value("term_override", cls.term_override),
             colorterm_value=settings.value("colorterm_value", cls.colorterm_value),
@@ -91,6 +101,11 @@ class AppSettings:
         settings.setValue("new_tab_shortcut", self.new_tab_shortcut)
         settings.setValue("split_horizontal_shortcut", self.split_horizontal_shortcut)
         settings.setValue("split_vertical_shortcut", self.split_vertical_shortcut)
+        settings.setValue("next_tab_shortcut", self.next_tab_shortcut)
+        settings.setValue("previous_tab_shortcut", self.previous_tab_shortcut)
+        settings.setValue("switch_terminal_shortcut", self.switch_terminal_shortcut)
+        settings.setValue("switch_terminal_reverse_shortcut", self.switch_terminal_reverse_shortcut)
+        settings.setValue("close_tab_shortcut", self.close_tab_shortcut)
         settings.setValue("mouse_reporting", self.mouse_reporting)
         settings.setValue("term_override", self.term_override)
         settings.setValue("colorterm_value", self.colorterm_value)

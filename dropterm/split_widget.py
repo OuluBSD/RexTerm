@@ -1,5 +1,6 @@
 from PyQt6.QtWidgets import QSplitter, QWidget, QSizePolicy
 from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QKeyEvent, QKeySequence
 from .shell_widget import ShellWidget
 
 
@@ -25,6 +26,9 @@ class SplitTerminalWidget(QWidget):
 
         # Track all shell widgets for management
         self.shell_widgets = [self.shell_widget]
+
+        # Keep track of the current focused widget index
+        self.current_widget_index = 0
 
         # Start monitoring shell processes
         self._start_monitoring()
@@ -133,6 +137,54 @@ class SplitTerminalWidget(QWidget):
                 return parent
             parent = parent.parent()
         return self.splitter  # Return main splitter if no parent splitter found
+
+    def switch_to_next_terminal(self):
+        """Switch focus to the next terminal in the split view."""
+        if len(self.shell_widgets) <= 1:
+            # If there's only one terminal, just focus it
+            if self.shell_widgets:
+                self.shell_widgets[0].output_area.setFocus()
+            return
+
+        # Get the currently focused widget
+        current_focused_widget = self._get_focused_widget()
+
+        # Find the index of the currently focused widget
+        if current_focused_widget and current_focused_widget in self.shell_widgets:
+            current_index = self.shell_widgets.index(current_focused_widget)
+            next_index = (current_index + 1) % len(self.shell_widgets)
+        else:
+            # If no widget has focus or the focused widget is not in our list,
+            # use the current_widget_index
+            next_index = (self.current_widget_index + 1) % len(self.shell_widgets)
+
+        # Update the current_widget_index and set focus
+        self.current_widget_index = next_index
+        self.shell_widgets[next_index].output_area.setFocus()
+
+    def switch_to_previous_terminal(self):
+        """Switch focus to the previous terminal in the split view."""
+        if len(self.shell_widgets) <= 1:
+            # If there's only one terminal, just focus it
+            if self.shell_widgets:
+                self.shell_widgets[0].output_area.setFocus()
+            return
+
+        # Get the currently focused widget
+        current_focused_widget = self._get_focused_widget()
+
+        # Find the index of the currently focused widget
+        if current_focused_widget and current_focused_widget in self.shell_widgets:
+            current_index = self.shell_widgets.index(current_focused_widget)
+            prev_index = (current_index - 1) % len(self.shell_widgets)
+        else:
+            # If no widget has focus or the focused widget is not in our list,
+            # use the current_widget_index
+            prev_index = (self.current_widget_index - 1) % len(self.shell_widgets)
+
+        # Update the current_widget_index and set focus
+        self.current_widget_index = prev_index
+        self.shell_widgets[prev_index].output_area.setFocus()
 
     def hasFocus(self):
         """Check if any of the contained widgets have focus."""

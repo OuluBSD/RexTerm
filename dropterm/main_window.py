@@ -60,6 +60,8 @@ class MainWindow(QMainWindow):
         self.tab_widget.setMovable(True)
         self.tab_widget.tabCloseRequested.connect(self._close_tab)
         self.tab_widget.currentChanged.connect(self._tab_changed)
+        self.tab_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tab_widget.customContextMenuRequested.connect(self._tab_context_menu)
 
         self.menu_button = QToolButton(self)
         self.menu_button.setText("Menu")
@@ -98,7 +100,7 @@ class MainWindow(QMainWindow):
 
         self.terminal_menu = menubar.addMenu('Terminal')
 
-        self.close_tab_action = QAction('Close Tab', self)
+        self.close_tab_action = QAction(f'Close Tab [{self.settings.close_tab_shortcut}]', self)
         self.close_tab_action.triggered.connect(lambda: self._close_tab(self.tab_widget.currentIndex()))
         self.terminal_menu.addAction(self.close_tab_action)
 
@@ -138,6 +140,27 @@ class MainWindow(QMainWindow):
         self.split_vertical_action.triggered.connect(self.split_vertical)
         self.addAction(self.split_vertical_action)
 
+        # Set up keyboard shortcuts for tab switching
+        self.next_tab_action = QAction("Next Tab", self)
+        self.next_tab_action.setShortcut(QKeySequence(self.settings.next_tab_shortcut))
+        self.next_tab_action.triggered.connect(self.next_tab)
+        self.addAction(self.next_tab_action)
+
+        self.previous_tab_action = QAction("Previous Tab", self)
+        self.previous_tab_action.setShortcut(QKeySequence(self.settings.previous_tab_shortcut))
+        self.previous_tab_action.triggered.connect(self.previous_tab)
+        self.addAction(self.previous_tab_action)
+
+        # Set up keyboard shortcut for closing tab
+        self.close_tab_action = QAction("Close Tab", self)
+        self.close_tab_action.setShortcut(QKeySequence(self.settings.close_tab_shortcut))
+        self.close_tab_action.triggered.connect(lambda: self._close_tab(self.tab_widget.currentIndex()))
+        self.addAction(self.close_tab_action)
+
+        # The Ctrl+Tab shortcut is handled directly in the ShellWidget to enable switching
+        # between split terminals on the current tab. There is no need to add it as an action
+        # because ShellWidget handles the key event directly.
+
     def split_horizontal(self):
         """Split the current terminal horizontally."""
         current_widget = self.tab_widget.currentWidget()
@@ -149,6 +172,18 @@ class MainWindow(QMainWindow):
         current_widget = self.tab_widget.currentWidget()
         if hasattr(current_widget, 'split_vertical'):
             current_widget.split_vertical()
+
+    def next_tab(self):
+        """Switch to the next tab."""
+        current_index = self.tab_widget.currentIndex()
+        next_index = (current_index + 1) % self.tab_widget.count()
+        self.tab_widget.setCurrentIndex(next_index)
+
+    def previous_tab(self):
+        """Switch to the previous tab."""
+        current_index = self.tab_widget.currentIndex()
+        prev_index = (current_index - 1) % self.tab_widget.count()
+        self.tab_widget.setCurrentIndex(prev_index)
 
     def add_terminal_tab(self, shell_type=None, scrollback_lines=None, use_split_widget=False):
         shell_type = shell_type or self.session_shell_type or self.settings.default_shell
@@ -224,6 +259,14 @@ class MainWindow(QMainWindow):
         widget = self.tab_widget.currentWidget()
         return widget if isinstance(widget, ShellWidget) else None
 
+    def _tab_context_menu(self, position):
+        tab_index = self.tab_widget.tabBar().tabAt(position)
+        if tab_index != -1:
+            menu = QMenu(self)
+            close_action = menu.addAction("Close Tab")
+            close_action.triggered.connect(lambda: self._close_tab(tab_index))
+            menu.exec(self.tab_widget.mapToGlobal(position))
+
     def _tab_changed(self, index):
         widget = self.tab_widget.widget(index)
         if isinstance(widget, ShellWidget):
@@ -238,6 +281,10 @@ class MainWindow(QMainWindow):
         self.new_window_action.setShortcut(QKeySequence(self.settings.new_window_shortcut))
         self.split_horizontal_action.setShortcut(QKeySequence(self.settings.split_horizontal_shortcut))
         self.split_vertical_action.setShortcut(QKeySequence(self.settings.split_vertical_shortcut))
+        self.next_tab_action.setShortcut(QKeySequence(self.settings.next_tab_shortcut))
+        self.previous_tab_action.setShortcut(QKeySequence(self.settings.previous_tab_shortcut))
+        self.close_tab_action.setShortcut(QKeySequence(self.settings.close_tab_shortcut))
+        self.close_tab_action.setText(f'Close Tab [{self.settings.close_tab_shortcut}]')
 
         opacity = max(0.05, 1 - (self.settings.window_transparency / 100))
         self.setWindowOpacity(opacity)

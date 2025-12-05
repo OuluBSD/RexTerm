@@ -72,7 +72,7 @@ else:
 class TerminalEmulator:
     """Wrapper for cross-platform PTY with pyte terminal emulation."""
 
-    def __init__(self, cols=80, rows=24, shell_type='bash', history_lines=1000, term_override=None, colorterm_value="truecolor"):
+    def __init__(self, cols=80, rows=24, shell_type='bash', history_lines=1000, term_override=None, colorterm_value="truecolor", exit_callback=None):
         self.cols = cols
         self.rows = rows
         self.history_lines = history_lines
@@ -83,6 +83,7 @@ class TerminalEmulator:
         self.msys64_path = find_msys64_path() if shell_type in ['bash', 'auto'] else None
         self.term_override = term_override
         self.colorterm_value = colorterm_value
+        self.exit_callback = exit_callback
 
         self.screen = screens.HistoryScreen(cols, rows, history=history_lines)
         self.stream = pyte.Stream()

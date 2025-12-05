@@ -54,7 +54,7 @@ class ShellWidget(QWidget):
         # Set default shell type based on platform - 'bash' is more appropriate for Linux
         effective_shell_type = shell_type if shell_type != 'auto' else ('bash' if sys.platform != 'win32' else 'auto')
 
-        self.terminal = TerminalEmulator(cols=80, rows=24, shell_type=effective_shell_type, history_lines=scrollback_lines, term_override=term_override, colorterm_value=colorterm_value)
+        self.terminal = TerminalEmulator(cols=80, rows=24, shell_type=effective_shell_type, history_lines=scrollback_lines, term_override=term_override, colorterm_value=colorterm_value, exit_callback=self._on_terminal_exit)
         if not self.terminal.start():
             raise Exception("Could not start terminal emulator")
 
@@ -195,6 +195,8 @@ class ShellWidget(QWidget):
         self.new_window_sequence = QKeySequence(settings.new_window_shortcut) if settings.new_window_shortcut else None
         self.quake_taller_sequence = QKeySequence(settings.quake_resize_up_shortcut) if settings.quake_resize_up_shortcut else None
         self.quake_shorter_sequence = QKeySequence(settings.quake_resize_down_shortcut) if settings.quake_resize_down_shortcut else None
+        self.switch_terminal_sequence = QKeySequence(settings.switch_terminal_shortcut) if settings.switch_terminal_shortcut else None
+        self.switch_terminal_reverse_sequence = QKeySequence(settings.switch_terminal_reverse_shortcut) if settings.switch_terminal_reverse_shortcut else None
 
     def _css_color(self, value):
         if not value or value == "default":
@@ -581,6 +583,23 @@ class ShellWidget(QWidget):
                 event.accept()
                 return True
 
+        # Check for switch terminal shortcut (forward - configurable)
+        if self.switch_terminal_sequence and event_sequence.matches(self.switch_terminal_sequence) == QKeySequence.SequenceMatch.ExactMatch:
+            if main and main.__class__.__name__ == "MainWindow":
+                current_widget = main.tab_widget.currentWidget()
+                if hasattr(current_widget, 'switch_to_next_terminal'):
+                    current_widget.switch_to_next_terminal()
+                    event.accept()
+                    return True
+        # Check for switch terminal shortcut (reverse - configurable)
+        elif self.switch_terminal_reverse_sequence and event_sequence.matches(self.switch_terminal_reverse_sequence) == QKeySequence.SequenceMatch.ExactMatch:
+            if main and main.__class__.__name__ == "MainWindow":
+                current_widget = main.tab_widget.currentWidget()
+                if hasattr(current_widget, 'switch_to_previous_terminal'):
+                    current_widget.switch_to_previous_terminal()
+                    event.accept()
+                    return True
+
         allow_default_copy = (self.copy_sequence is None) or (
             self.copy_sequence.matches(QKeySequence(AppSettings.copy_shortcut)) == QKeySequence.SequenceMatch.ExactMatch
         )
@@ -790,6 +809,24 @@ class ShellWidget(QWidget):
         else:
             self.terminal.write('clear\n')
 
+    def _on_terminal_exit(self):
+        """Callback when the terminal process exits - close the tab"""
+        # Get the main window
+        main_window = self.window()
+        if main_window and main_window.__class__.__name__ == "MainWindow":
+            # Find the tab containing this shell widget
+            for i in range(main_window.tab_widget.count()):
+                tab_widget = main_window.tab_widget.widget(i)
+                # Check if the tab contains this shell widget directly or through a SplitTerminalWidget
+                if tab_widget == self:
+                    # Direct shell widget in the tab (rare case)
+                    main_window._close_tab(i)
+                    break
+                elif hasattr(tab_widget, 'shell_widgets') and self in tab_widget.shell_widgets:
+                    # This shell widget is part of a SplitTerminalWidget
+                    main_window._close_tab(i)
+                    break
+
     def closeEvent(self, event):
         if self.output_buffer:
             has_ansi = '\x1b[' in self.output_buffer
@@ -800,6 +837,8 @@ class ShellWidget(QWidget):
                 self.output_area.insertPlainText(self.output_buffer)
             self.output_buffer = ""
 
+        # Prevent the exit callback from attempting to close a tab that's already being closed
+        self.terminal.exit_callback = None
         self.terminal_thread.stop()
         self.terminal.close()
         event.accept()

@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 import queue
 import sys
 import time
@@ -53,7 +54,11 @@ def _run_eval_mode(args, colorterm):
     reader_thread = threading.Thread(target=read_terminal, daemon=True)
     reader_thread.start()
 
-    terminal.write(args.eval + '\n')
+    # Handle both string and bytes properly
+    command = args.eval + '\n'
+    if sys.platform != 'win32':
+        command = command.encode('utf-8')
+    terminal.write(command)
 
     reader_thread.join(timeout=args.timeout)
     terminal.close()
@@ -117,8 +122,9 @@ def main():
     settings = AppSettings.load()
 
     parser = argparse.ArgumentParser(description='GUI Shell with MSYS2 support')
-    parser.add_argument('--shell', '-s', choices=['cmd', 'bash', 'auto'], default=settings.default_shell,
-                        help='Shell type to use: cmd, bash, or auto (default: auto)')
+    default_shell = settings.default_shell if settings.default_shell != 'auto' else ('bash' if sys.platform != 'win32' else 'auto')
+    parser.add_argument('--shell', '-s', choices=['cmd', 'bash', 'auto'], default=default_shell,
+                        help='Shell type to use: cmd, bash, or auto (default: auto on Windows, bash on Unix)')
     parser.add_argument('--eval', help='Command to evaluate in non-interactive mode')
     parser.add_argument('--dump', action='store_true', help='Dump screen content to stdout in non-interactive mode')
     parser.add_argument('--timeout', type=int, default=10, help='Timeout in seconds for non-interactive mode (default: 10)')

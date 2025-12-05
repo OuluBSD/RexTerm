@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import re
+import sys
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QEvent, QTimer, Qt
@@ -47,13 +48,17 @@ class ShellWidget(QWidget):
         # Drop preserved input after commands so stale text doesn't linger
         self.clear_pending_input = False
 
-        self.terminal = TerminalEmulator(cols=80, rows=24, shell_type=shell_type, history_lines=scrollback_lines, term_override=term_override, colorterm_value=colorterm_value)
+        # Set default shell type based on platform - 'bash' is more appropriate for Linux
+        effective_shell_type = shell_type if shell_type != 'auto' else ('bash' if sys.platform != 'win32' else 'auto')
+
+        self.terminal = TerminalEmulator(cols=80, rows=24, shell_type=effective_shell_type, history_lines=scrollback_lines, term_override=term_override, colorterm_value=colorterm_value)
         if not self.terminal.start():
             raise Exception("Could not start terminal emulator")
 
         self.in_alternate_screen = False
         self._alt_history_marker: tuple[int, int] | None = None
-        self.enter_sequence = '\r'
+        # Use \n for Unix systems and \r for Windows
+        self.enter_sequence = '\n' if sys.platform != 'win32' else '\r'
 
         self.debug_enabled = False
         self.debug_file = None
@@ -432,7 +437,8 @@ class ShellWidget(QWidget):
         event_sequence = QKeySequence(_mods_to_int(modifiers) | int(key))
 
         main = self.window()
-        if isinstance(main, MainWindow) and main.settings.quake_enabled:
+        # Use string comparison to avoid circular import
+        if main and main.__class__.__name__ == "MainWindow" and main.settings.quake_enabled:
             if self.quake_taller_sequence and event_sequence.matches(self.quake_taller_sequence) == QKeySequence.SequenceMatch.ExactMatch:
                 main.adjust_quake_height(5)
                 event.accept()
@@ -632,10 +638,11 @@ class ShellWidget(QWidget):
         self.output_area.setHtml(self._wrap_html(display_html))
         self.input_start_position = len(self.output_area.toPlainText())
 
-        if hasattr(self.terminal, 'shell_type') and self.terminal.shell_type in ['bash', 'auto'] and self.terminal.msys64_path:
-            self.terminal.write('clear\n')
-        else:
+        # Use 'clear' for Unix systems and 'cls' for Windows
+        if sys.platform == 'win32':
             self.terminal.write('cls\n')
+        else:
+            self.terminal.write('clear\n')
 
     def closeEvent(self, event):
         if self.output_buffer:

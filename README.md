@@ -2,19 +2,20 @@
 
 Cross-platform drop-down terminal for Windows, macOS, and Linux. It can float down from the top of the screen like Guake or run as a normal terminal window.
 
-We wanted to just fork Guake, but the Linux-first codebase proved too difficult to adapt across platforms. A Qt6 + winpty core worked immediately on Windows, so we built a new app that follows Guake’s spirit while targeting all major desktops.
+We wanted to just fork Guake, but the Linux-first codebase proved too difficult to adapt across platforms. A Qt6 + winpty core worked immediately on Windows, so we built a new app that follows Guake's spirit while targeting all major desktops.
 
 ## Features
 - Drop-down quake-style terminal or standard windowed terminal
 - PyQt6 UI with tabs and configurable shortcuts
-- Truecolor/TERM export and scrollback via pyte + winpty backend (Windows)
-- Global hotkey for toggling the quake window
+- Truecolor/TERM export and scrollback via pyte + platform-appropriate PTY backend
+- Global hotkey for toggling the quake window (Windows only)
 - Settings dialog for fonts, themes, quake behavior, and shortcuts
 
 ## Dependencies
 - Python 3.8+
 - PyQt6
-- pywinpty (packaged as winpty in MSYS2/MinGW environments for Windows)
+- pywinpty (Windows only)
+- ptyprocess (Unix-like systems)
 
 ## Installation (Windows / MSYS2 examples)
 ```bash
@@ -25,6 +26,11 @@ pacman -S mingw-w64-ucrt-x86_64-python-pyqt6 mingw-w64-ucrt-x86_64-python-pywinp
 pacman -S mingw-w64-clang-x86_64-python-pyqt6 mingw-w64-clang-x86_64-python-pywinpty
 ```
 
+## Installation (Linux)
+```bash
+pip install -r requirements.txt
+```
+
 ## Usage
 Run the app:
 ```bash
@@ -33,4 +39,5 @@ python gui_shell.py
 
 ## Notes
 - Default behavior follows Guake: quake-style drop-down when enabled, otherwise a standard window.
-- On Windows the PTY layer uses winpty; on other platforms Qt/pty integration is expected to take over as support is added.
+- On Windows the PTY layer uses winpty; on Unix-like systems it uses ptyprocess for cross-platform PTY support.
+- Global hotkey functionality is currently Windows-only.

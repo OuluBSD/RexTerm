@@ -1,5 +1,5 @@
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QKeySequence, QKeySequenceEdit
+from PyQt6.QtGui import QFont, QKeySequence
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QFontComboBox,
+    QKeySequenceEdit,
 )
 
 from .app_settings import AppSettings

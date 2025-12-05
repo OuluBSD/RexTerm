@@ -1,3 +1,4 @@
+import sys
 import ctypes
 import logging
 
@@ -185,6 +186,15 @@ class MainWindow(QMainWindow):
         self.setWindowOpacity(opacity)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, self.settings.always_on_top)
         self._apply_quake_chrome()
+
+        # If not in quake mode, ensure the window is visible and not hidden
+        if not self.settings.quake_enabled:
+            self.showNormal()
+
+            # Ensure the window is visible if it was previously hidden
+            if not self.isVisible():
+                self.show()
+
         if self.isVisible():
             self.show()
         self._ensure_tray_icon()
@@ -212,6 +222,10 @@ class MainWindow(QMainWindow):
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, is_quake)
         if is_quake:
             self._apply_quake_height()
+        else:
+            # Restore normal window properties when not in quake mode
+            self.setWindowFlag(Qt.WindowType.WindowMinMaxButtonsHint, True)
+            self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, True)
 
     def _ensure_tray_icon(self):
         if self.tray_icon is None:
@@ -229,6 +243,12 @@ class MainWindow(QMainWindow):
 
         self._update_tray_visibility()
 
+    def showEvent(self, event):
+        """Override to ensure window is shown properly when not in quake mode"""
+        super().showEvent(event)
+        if not self.settings.quake_enabled:
+            self.showNormal()
+
     def _update_tray_visibility(self):
         if not self.tray_icon:
             return
@@ -236,7 +256,10 @@ class MainWindow(QMainWindow):
             if not self.tray_icon.isVisible():
                 self.tray_icon.show()
         else:
-            self.tray_icon.hide()
+            # Only hide tray icon if explicitly disabled in settings or not needed
+            # Most users prefer having the tray icon available to access the app
+            if not self.tray_icon.isVisible():
+                self.tray_icon.show()
 
     def _apply_quake_height(self):
         screen = self.screen() or QApplication.primaryScreen()
@@ -271,7 +294,9 @@ class MainWindow(QMainWindow):
         else:
             if self.settings.quake_enabled:
                 self._apply_quake_height()
-            self.showNormal()
+            else:
+                # When not in quake mode, ensure proper window visibility
+                self.showNormal()
             self.raise_()
             self.activateWindow()
 
@@ -284,24 +309,30 @@ class MainWindow(QMainWindow):
         if not self.settings.quake_enabled:
             return
 
-        parsed = parse_hotkey_to_win(self.settings.quake_hotkey)
-        if not parsed:
-            logging.warning("No hotkey set for quake mode; skipping registration.")
-            return
+        # Only register global hotkey on Windows
+        if sys.platform == 'win32':
+            parsed = parse_hotkey_to_win(self.settings.quake_hotkey)
+            if not parsed:
+                logging.warning("No hotkey set for quake mode; skipping registration.")
+                return
 
-        mods, vk = parsed
+            mods, vk = parsed
 
-        hwnd = int(self.winId())
-        if ctypes.windll.user32.RegisterHotKey(hwnd, GLOBAL_HOTKEY_ID, mods, vk):
-            if not self._native_filter_installed:
-                QCoreApplication.instance().installNativeEventFilter(self.hotkey_filter)
-                self._native_filter_installed = True
-            self.hotkey_registered = True
+            hwnd = int(self.winId())
+            if ctypes.windll.user32.RegisterHotKey(hwnd, GLOBAL_HOTKEY_ID, mods, vk):
+                if not self._native_filter_installed:
+                    QCoreApplication.instance().installNativeEventFilter(self.hotkey_filter)
+                    self._native_filter_installed = True
+                self.hotkey_registered = True
+            else:
+                logging.warning("Failed to register global hotkey '%s'", self.settings.quake_hotkey)
         else:
-            logging.warning("Failed to register global hotkey '%s'", self.settings.quake_hotkey)
+            # On non-Windows systems, we use Qt's standard hotkey functionality or skip
+            logging.info("Global hotkey is Windows only. Using application hotkey instead.")
+            # TODO: Consider implementing cross-platform hotkey solution for non-Windows systems
 
     def _unregister_global_hotkey(self):
-        if self.hotkey_registered:
+        if sys.platform == 'win32' and self.hotkey_registered:
             ctypes.windll.user32.UnregisterHotKey(int(self.winId()), GLOBAL_HOTKEY_ID)
             self.hotkey_registered = False
 

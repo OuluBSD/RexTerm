@@ -1,14 +1,18 @@
+import sys
 import ctypes
 from ctypes import wintypes
 
 from PyQt6.QtCore import QAbstractNativeEventFilter
 from PyQt6.QtGui import QKeySequence
 
-WM_HOTKEY = 0x0312
-MOD_ALT = 0x0001
-MOD_CONTROL = 0x0002
-MOD_SHIFT = 0x0004
-MOD_WIN = 0x0008
+# Windows-specific constants
+if sys.platform == 'win32':
+    WM_HOTKEY = 0x0312
+    MOD_ALT = 0x0001
+    MOD_CONTROL = 0x0002
+    MOD_SHIFT = 0x0004
+    MOD_WIN = 0x0008
+
 GLOBAL_HOTKEY_ID = 1
 
 
@@ -20,6 +24,10 @@ class HotkeyEventFilter(QAbstractNativeEventFilter):
         self.callback = callback
 
     def nativeEventFilter(self, eventType, message):
+        if sys.platform != 'win32':
+            # On non-Windows systems, we don't handle native hotkey events
+            return False, 0
+
         if eventType != "windows_generic_MSG":
             return False, 0
 
@@ -35,6 +43,9 @@ class HotkeyEventFilter(QAbstractNativeEventFilter):
 
 def key_string_to_vk(key: str) -> int | None:
     """Map a textual key token (e.g., 'A', 'F1', '`') to a Windows virtual-key code."""
+    if sys.platform != 'win32':
+        return None  # Not applicable on non-Windows platforms
+
     tok = key.upper()
     if len(tok) == 1:
         if 'A' <= tok <= 'Z':
@@ -67,6 +78,9 @@ def key_string_to_vk(key: str) -> int | None:
 
 def parse_hotkey_to_win(hotkey: str) -> tuple[int, int] | None:
     """Parse a QKeySequence-style string into (modifiers, vk) for RegisterHotKey."""
+    if sys.platform != 'win32':
+        return None  # Only applicable on Windows
+
     seq = QKeySequence(hotkey)
     try:
         text = seq.toString(QKeySequence.Format.PortableText)  # PyQt6 6.5+

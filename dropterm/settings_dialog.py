@@ -134,6 +134,10 @@ class SettingsDialog(QDialog):
         self.new_window_seq.setKeySequence(QKeySequence(self.settings.new_window_shortcut))
         form.addRow("New window", self.new_window_seq)
 
+        self.new_tab_seq = QKeySequenceEdit()
+        self.new_tab_seq.setKeySequence(QKeySequence(self.settings.new_tab_shortcut))
+        form.addRow("New tab", self.new_tab_seq)
+
         self.quake_taller_seq = QKeySequenceEdit()
         self.quake_taller_seq.setKeySequence(QKeySequence(self.settings.quake_resize_up_shortcut))
         form.addRow("Quake height +", self.quake_taller_seq)
@@ -204,6 +208,7 @@ class SettingsDialog(QDialog):
         updated.copy_shortcut = self.copy_seq.keySequence().toString()
         updated.paste_shortcut = self.paste_seq.keySequence().toString()
         updated.new_window_shortcut = self.new_window_seq.keySequence().toString()
+        updated.new_tab_shortcut = self.new_tab_seq.keySequence().toString()
         updated.quake_resize_up_shortcut = self.quake_taller_seq.keySequence().toString()
         updated.quake_resize_down_shortcut = self.quake_shorter_seq.keySequence().toString()
         updated.split_horizontal_shortcut = self.split_horizontal_seq.keySequence().toString()

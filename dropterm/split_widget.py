@@ -1,5 +1,5 @@
-from PyQt6.QtWidgets import QSplitter, QWidget
-from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QSplitter, QWidget, QSizePolicy
+from PyQt6.QtCore import Qt, QTimer
 from .shell_widget import ShellWidget
 
 
@@ -25,6 +25,50 @@ class SplitTerminalWidget(QWidget):
 
         # Track all shell widgets for management
         self.shell_widgets = [self.shell_widget]
+
+        # Start monitoring shell processes
+        self._start_monitoring()
+
+    def _start_monitoring(self):
+        """Start monitoring shell processes for termination."""
+        self.monitor_timer = QTimer(self)
+        self.monitor_timer.timeout.connect(self._check_processes)
+        self.monitor_timer.start(500)  # Check every 500ms
+
+    def _check_processes(self):
+        """Check if any shell processes have terminated and remove them."""
+        widgets_to_remove = []
+
+        for i, widget in enumerate(self.shell_widgets):
+            if hasattr(widget, 'terminal') and widget.terminal:
+                # Check if the terminal process is still running
+                try:
+                    if not widget.terminal.running or not widget.terminal.pty_process.isalive():
+                        widgets_to_remove.append(widget)
+                except Exception:
+                    # If there's any exception checking the process, remove the widget
+                    widgets_to_remove.append(widget)
+
+        # Remove terminated widgets
+        for widget in widgets_to_remove:
+            self._remove_widget(widget)
+
+    def _remove_widget(self, widget):
+        """Remove a widget from the splitter and widget list."""
+        # Remove from splitter
+        self.splitter.widget(self.splitter.indexOf(widget)).setParent(None)
+
+        # Remove from tracking list
+        if widget in self.shell_widgets:
+            self.shell_widgets.remove(widget)
+
+        # Close the widget
+        widget.close()
+
+        # If there's only one widget left, we might want to clean up the splitter structure
+        if len(self.shell_widgets) <= 1:
+            # If we only have one widget, we can potentially optimize the layout
+            pass
 
     def split_horizontal(self):
         """Split the current view horizontally (side by side)."""

@@ -33,6 +33,7 @@ class AppSettings:
     copy_shortcut: str = "Ctrl+Shift+C"
     paste_shortcut: str = "Ctrl+Shift+V"
     new_window_shortcut: str = "Ctrl+Shift+N"
+    new_tab_shortcut: str = "Ctrl+T"
     split_horizontal_shortcut: str = "Ctrl+-"
     split_vertical_shortcut: str = "Ctrl+Shift+-"
     mouse_reporting: bool = True
@@ -60,6 +61,7 @@ class AppSettings:
             copy_shortcut=settings.value("copy_shortcut", cls.copy_shortcut),
             paste_shortcut=settings.value("paste_shortcut", cls.paste_shortcut),
             new_window_shortcut=settings.value("new_window_shortcut", cls.new_window_shortcut),
+            new_tab_shortcut=settings.value("new_tab_shortcut", cls.new_tab_shortcut),
             split_horizontal_shortcut=settings.value("split_horizontal_shortcut", cls.split_horizontal_shortcut),
             split_vertical_shortcut=settings.value("split_vertical_shortcut", cls.split_vertical_shortcut),
             mouse_reporting=settings.value("mouse_reporting", cls.mouse_reporting, type=bool),
@@ -86,6 +88,7 @@ class AppSettings:
         settings.setValue("copy_shortcut", self.copy_shortcut)
         settings.setValue("paste_shortcut", self.paste_shortcut)
         settings.setValue("new_window_shortcut", self.new_window_shortcut)
+        settings.setValue("new_tab_shortcut", self.new_tab_shortcut)
         settings.setValue("split_horizontal_shortcut", self.split_horizontal_shortcut)
         settings.setValue("split_vertical_shortcut", self.split_vertical_shortcut)
         settings.setValue("mouse_reporting", self.mouse_reporting)

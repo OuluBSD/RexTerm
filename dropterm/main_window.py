@@ -79,8 +79,14 @@ class MainWindow(QMainWindow):
         self.file_menu = menubar.addMenu('File')
 
         self.new_tab_action = QAction('New Tab', self)
+        self.new_tab_action.setShortcut(QKeySequence(self.settings.new_tab_shortcut))
         self.new_tab_action.triggered.connect(self.add_terminal_tab)
         self.file_menu.addAction(self.new_tab_action)
+
+        self.new_window_action = QAction('New Window', self)
+        self.new_window_action.setShortcut(QKeySequence(self.settings.new_window_shortcut))
+        self.new_window_action.triggered.connect(self.open_new_window)
+        self.file_menu.addAction(self.new_window_action)
 
         settings_action = QAction('Settings...', self)
         settings_action.triggered.connect(self.open_settings)
@@ -226,6 +232,12 @@ class MainWindow(QMainWindow):
     def apply_window_settings(self):
         for widget in self._iter_shell_widgets():
             widget.apply_settings(self.settings)
+
+        # Update the shortcuts based on new settings
+        self.new_tab_action.setShortcut(QKeySequence(self.settings.new_tab_shortcut))
+        self.new_window_action.setShortcut(QKeySequence(self.settings.new_window_shortcut))
+        self.split_horizontal_action.setShortcut(QKeySequence(self.settings.split_horizontal_shortcut))
+        self.split_vertical_action.setShortcut(QKeySequence(self.settings.split_vertical_shortcut))
 
         opacity = max(0.05, 1 - (self.settings.window_transparency / 100))
         self.setWindowOpacity(opacity)

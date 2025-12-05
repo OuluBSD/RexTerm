@@ -1,54 +1,36 @@
-# GUI Shell
+# RexTerm
 
-A Python-based graphical terminal emulator that provides a GUI interface for executing shell commands on Windows.
+Cross-platform drop-down terminal for Windows, macOS, and Linux. It can float down from the top of the screen like Guake or run as a normal terminal window.
+
+We wanted to just fork Guake, but the Linux-first codebase proved too difficult to adapt across platforms. A Qt6 + winpty core worked immediately on Windows, so we built a new app that follows Guake’s spirit while targeting all major desktops.
 
 ## Features
-
-- Graphical terminal interface built with PyQt6
-- Command history with up/down arrow navigation
-- Support for common terminal commands (cls to clear screen)
-- Keyboard shortcuts (Ctrl+C for interrupt, Ctrl+L to clear)
-- Real-time command execution and output display
+- Drop-down quake-style terminal or standard windowed terminal
+- PyQt6 UI with tabs and configurable shortcuts
+- Truecolor/TERM export and scrollback via pyte + winpty backend (Windows)
+- Global hotkey for toggling the quake window
+- Settings dialog for fonts, themes, quake behavior, and shortcuts
 
 ## Dependencies
-
 - Python 3.8+
 - PyQt6
-- pywinpty (installed as winpty in MSYS2/MinGW environments)
+- pywinpty (packaged as winpty in MSYS2/MinGW environments for Windows)
 
-## Installation
-
-If you're using MSYS2/MinGW environment, you can install the required packages using pacman:
-
+## Installation (Windows / MSYS2 examples)
 ```bash
-# For UCRT64 environment
+# UCRT64
 pacman -S mingw-w64-ucrt-x86_64-python-pyqt6 mingw-w64-ucrt-x86_64-python-pywinpty
 
-# For CLANG64 environment  
+# CLANG64
 pacman -S mingw-w64-clang-x86_64-python-pyqt6 mingw-w64-clang-x86_64-python-pywinpty
 ```
 
 ## Usage
-
-To run the GUI Shell:
-
+Run the app:
 ```bash
 python gui_shell.py
 ```
 
-## How to Use
-
-1. Type commands in the input field at the bottom
-2. Press Enter to execute the command
-3. Use Up/Down arrows to navigate command history
-4. Use Ctrl+L to clear the terminal screen
-5. Use Ctrl+C to send an interrupt signal to the running process
-
-## Technical Details
-
-The application uses:
-- PyQt6 for the GUI components
-- winpty (pywinpty) for Windows terminal virtualization
-- Threading to handle terminal I/O operations asynchronously
-
-The terminal emulator handles command execution, output display, and basic terminal features while providing a user-friendly graphical interface.
+## Notes
+- Default behavior follows Guake: quake-style drop-down when enabled, otherwise a standard window.
+- On Windows the PTY layer uses winpty; on other platforms Qt/pty integration is expected to take over as support is added.

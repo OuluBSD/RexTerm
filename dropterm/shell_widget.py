@@ -366,6 +366,20 @@ class ShellWidget(QWidget):
             if "\x1b[?1l" in text or "\x1b[?66l" in text:  # Normal cursor keys or Normal keypad mode
                 self.application_mode = False
 
+            # Detect mouse tracking mode changes
+            if "\x1b[?1000h" in text:  # Enable normal mouse tracking
+                self.terminal.mouse_tracking_normal = True
+            if "\x1b[?1000l" in text:  # Disable normal mouse tracking
+                self.terminal.mouse_tracking_normal = False
+            if "\x1b[?1002h" in text:  # Enable button-event mouse tracking
+                self.terminal.mouse_tracking_button = True
+            if "\x1b[?1002l" in text:  # Disable button-event mouse tracking
+                self.terminal.mouse_tracking_button = False
+            if "\x1b[?1003h" in text:  # Enable any-event mouse tracking
+                self.terminal.mouse_tracking_any = True
+            if "\x1b[?1003l" in text:  # Disable any-event mouse tracking
+                self.terminal.mouse_tracking_any = False
+
             if any(seq in text for seq in ("\x1b[?1049h", "\x1b[?47h", "\x1b[?1047h")):
                 screen = self.terminal.screen
                 if isinstance(screen, screens.HistoryScreen):
@@ -432,6 +446,108 @@ class ShellWidget(QWidget):
         super().resizeEvent(event)
         self.update_terminal_size()
 
+    def mousePressEvent(self, event):
+        if self.terminal.mouse_tracking_normal or self.terminal.mouse_tracking_button or self.terminal.mouse_tracking_any:
+            # Convert mouse position to terminal coordinates
+            col, row = self._get_terminal_position(event.pos())
+            if col is not None and row is not None:
+                # Encode mouse event as escape sequence
+                mouse_code = self._encode_mouse_event(event.button(), True)  # True for press
+                if mouse_code is not None:
+                    escape_seq = f"\x1b[M{mouse_code}{col+32+1}{row+32+1}"  # 32 is added to get ' ' (space) as base, then 1-indexed
+                    self.terminal.write(escape_seq.encode('utf-8') if isinstance(escape_seq, str) else escape_seq)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self.terminal.mouse_tracking_button or self.terminal.mouse_tracking_any:
+            # Convert mouse position to terminal coordinates
+            col, row = self._get_terminal_position(event.pos())
+            if col is not None and row is not None:
+                # Encode mouse event as escape sequence (released button is encoded as button 3)
+                escape_seq = f"\x1b[M{32+3}{col+32+1}{row+32+1}"  # 32 is added to get ' ' (space) as base, 3 is release
+                self.terminal.write(escape_seq.encode('utf-8') if isinstance(escape_seq, str) else escape_seq)
+        super().mouseReleaseEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.terminal.mouse_tracking_button or self.terminal.mouse_tracking_any:
+            # Only report motion if a button is pressed (for 1002 mode) or always (for 1003 mode)
+            modifiers = QApplication.keyboardModifiers()
+            if self.terminal.mouse_tracking_button and (modifiers & Qt.KeyboardModifier.LeftButton or
+                                                      modifiers & Qt.KeyboardModifier.RightButton or
+                                                      modifiers & Qt.KeyboardModifier.MiddleButton):
+                # Motion with button pressed
+                col, row = self._get_terminal_position(event.pos())
+                if col is not None and row is not None:
+                    mouse_code = self._encode_mouse_event(Qt.MouseButton.LeftButton, True) | 32  # Motion event
+                    escape_seq = f"\x1b[M{mouse_code}{col+32+1}{row+32+1}"
+                    self.terminal.write(escape_seq.encode('utf-8') if isinstance(escape_seq, str) else escape_seq)
+            elif self.terminal.mouse_tracking_any:
+                # Any motion is reported
+                col, row = self._get_terminal_position(event.pos())
+                if col is not None and row is not None:
+                    mouse_code = self._encode_mouse_event(Qt.MouseButton.LeftButton, True) | 32  # Motion event
+                    escape_seq = f"\x1b[M{mouse_code}{col+32+1}{row+32+1}"
+                    self.terminal.write(escape_seq.encode('utf-8') if isinstance(escape_seq, str) else escape_seq)
+        super().mouseMoveEvent(event)
+
+    def _get_terminal_position(self, pos):
+        """Convert widget coordinates to terminal (col, row) position"""
+        if not self.output_area or not self.output_area.viewport():
+            return None, None
+
+        viewport = self.output_area.viewport()
+        if viewport.width() <= 0 or viewport.height() <= 0:
+            return None, None
+
+        metrics = self.output_area.fontMetrics()
+        char_width = max(1, metrics.horizontalAdvance("M"))
+        char_height = max(1, metrics.lineSpacing())
+
+        # Convert from viewport coordinates to terminal position
+        # pos is relative to the viewport
+        viewport_pos = self.output_area.mapTo(viewport, pos)
+
+        col = int(viewport_pos.x() / char_width)
+        row = int(viewport_pos.y() / char_height)
+
+        # Ensure the position is within terminal bounds
+        if 0 <= col < self.terminal.cols and 0 <= row < self.terminal.rows:
+            return col, row
+        else:
+            return None, None
+
+    def _encode_mouse_event(self, button, pressed=True):
+        """Encode mouse button event to xterm format"""
+        if button == Qt.MouseButton.LeftButton:
+            return 0 if pressed else 3
+        elif button == Qt.MouseButton.MiddleButton:
+            return 1 if pressed else 3
+        elif button == Qt.MouseButton.RightButton:
+            return 2 if pressed else 3
+        elif button == Qt.MouseButton.XButton1:  # Back button on mouse
+            return 64 if pressed else 67
+        elif button == Qt.MouseButton.XButton2:  # Forward button on mouse
+            return 65 if pressed else 68
+        else:
+            return 3  # No button / release
+
+    def wheelEvent(self, event):
+        if self.terminal.mouse_tracking_normal or self.terminal.mouse_tracking_button or self.terminal.mouse_tracking_any:
+            # Convert mouse position to terminal coordinates
+            col, row = self._get_terminal_position(event.position().toPoint())
+            if col is not None and row is not None:
+                # Encode mouse wheel event
+                # Vertical wheel: 64 for up, 65 for down (with button pressed bit set)
+                if event.angleDelta().y() > 0:  # Scrolling up
+                    mouse_code = 64  # Wheel up
+                else:  # Scrolling down
+                    mouse_code = 65  # Wheel down
+
+                escape_seq = f"\x1b[M{mouse_code}{col+32+1}{row+32+1}"
+                self.terminal.write(escape_seq.encode('utf-8') if isinstance(escape_seq, str) else escape_seq)
+        event.accept()
+        super().wheelEvent(event)
+
     def handle_key_press(self, event: QKeyEvent):
         key = event.key()
         modifiers = event.modifiers()
@@ -449,19 +565,19 @@ class ShellWidget(QWidget):
         # Use string comparison to avoid circular import
         if main and main.__class__.__name__ == "MainWindow" and main.settings.quake_enabled:
             if self.quake_taller_sequence and event_sequence.matches(self.quake_taller_sequence) == QKeySequence.SequenceMatch.ExactMatch:
-                main.adjust_quake_height(5)
+                main.adjust_quake_height(5)  # Taller key increases height
                 event.accept()
                 return True
             if self.quake_shorter_sequence and event_sequence.matches(self.quake_shorter_sequence) == QKeySequence.SequenceMatch.ExactMatch:
-                main.adjust_quake_height(-5)
+                main.adjust_quake_height(-5)  # Shorter key decreases height
                 event.accept()
                 return True
             if not self.quake_taller_sequence and modifiers == Qt.KeyboardModifier.ControlModifier and key == Qt.Key.Key_Down:
-                main.adjust_quake_height(5)
+                main.adjust_quake_height(5)  # Down key increases height
                 event.accept()
                 return True
             if not self.quake_shorter_sequence and modifiers == Qt.KeyboardModifier.ControlModifier and key == Qt.Key.Key_Up:
-                main.adjust_quake_height(-5)
+                main.adjust_quake_height(-5)  # Up key decreases height
                 event.accept()
                 return True
 
@@ -489,7 +605,8 @@ class ShellWidget(QWidget):
 
         if self.new_window_sequence and event_sequence.matches(self.new_window_sequence) == QKeySequence.SequenceMatch.ExactMatch:
             main = self.window()
-            if isinstance(main, MainWindow):
+            # Use string comparison to avoid circular import
+            if main and main.__class__.__name__ == "MainWindow":
                 main.open_new_window()
             event.accept()
             return True

@@ -88,6 +88,11 @@ class TerminalEmulator:
         self.stream = pyte.Stream()
         self.stream.attach(self.screen)
 
+        # Mouse tracking state
+        self.mouse_tracking_normal = False  # \x1b[?1000h
+        self.mouse_tracking_button = False  # \x1b[?1002h
+        self.mouse_tracking_any = False     # \x1b[?1003h
+
     def start(self):
         try:
             env_vars = os.environ.copy()

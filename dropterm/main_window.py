@@ -3,7 +3,7 @@ import ctypes
 import logging
 
 from PyQt6.QtCore import QCoreApplication, Qt
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -22,6 +22,7 @@ from .app_settings import AppSettings
 from .hotkeys import GLOBAL_HOTKEY_ID, HotkeyEventFilter, parse_hotkey_to_win
 from .settings_dialog import SettingsDialog
 from .shell_widget import ShellWidget
+from .split_widget import SplitTerminalWidget
 
 
 class MainWindow(QMainWindow):
@@ -69,6 +70,9 @@ class MainWindow(QMainWindow):
         container.setLayout(layout)
         self.setCentralWidget(container)
 
+        # Initialize split_widget to None - it will be set when we create the first tab
+        self.split_widget = None
+
     def create_menu(self):
         menubar = self.menuBar()
 
@@ -96,6 +100,15 @@ class MainWindow(QMainWindow):
         clear_action.triggered.connect(self.clear_screen)
         self.terminal_menu.addAction(clear_action)
 
+        # Add split actions
+        self.split_horizontal_action_menu = QAction(f'Split Horizontal (|) [{self.settings.split_horizontal_shortcut}]', self)
+        self.split_horizontal_action_menu.triggered.connect(self.split_horizontal)
+        self.terminal_menu.addAction(self.split_horizontal_action_menu)
+
+        self.split_vertical_action_menu = QAction(f'Split Vertical (-) [{self.settings.split_vertical_shortcut}]', self)
+        self.split_vertical_action_menu.triggered.connect(self.split_vertical)
+        self.terminal_menu.addAction(self.split_vertical_action_menu)
+
         self.help_menu = menubar.addMenu('Help')
 
         about_action = QAction('About', self)
@@ -108,9 +121,30 @@ class MainWindow(QMainWindow):
         self.menu_button.setMenu(self.menu_popup)
 
     def setup_shortcuts(self):
-        pass
+        # Set up keyboard shortcuts for splitting
+        self.split_horizontal_action = QAction("Split Horizontal", self)
+        self.split_horizontal_action.setShortcut(QKeySequence(self.settings.split_horizontal_shortcut))
+        self.split_horizontal_action.triggered.connect(self.split_horizontal)
+        self.addAction(self.split_horizontal_action)
 
-    def add_terminal_tab(self, shell_type=None, scrollback_lines=None):
+        self.split_vertical_action = QAction("Split Vertical", self)
+        self.split_vertical_action.setShortcut(QKeySequence(self.settings.split_vertical_shortcut))
+        self.split_vertical_action.triggered.connect(self.split_vertical)
+        self.addAction(self.split_vertical_action)
+
+    def split_horizontal(self):
+        """Split the current terminal horizontally."""
+        current_widget = self.tab_widget.currentWidget()
+        if hasattr(current_widget, 'split_horizontal'):
+            current_widget.split_horizontal()
+
+    def split_vertical(self):
+        """Split the current terminal vertically."""
+        current_widget = self.tab_widget.currentWidget()
+        if hasattr(current_widget, 'split_vertical'):
+            current_widget.split_vertical()
+
+    def add_terminal_tab(self, shell_type=None, scrollback_lines=None, use_split_widget=False):
         shell_type = shell_type or self.session_shell_type or self.settings.default_shell
         scrollback_lines = self.settings.scrollback_lines if scrollback_lines is None else scrollback_lines
         shell = ShellWidget(
@@ -120,8 +154,19 @@ class MainWindow(QMainWindow):
             colorterm_value=self.session_colorterm,
             settings=self.settings,
         )
-        index = self.tab_widget.addTab(shell, f"Tab {self.tab_widget.count() + 1}")
-        self.tab_widget.setCurrentIndex(index)
+
+        # If this is the first tab, initialize the split widget with it
+        if not use_split_widget or self.tab_widget.count() == 0:
+            # Initialize the split widget with the first shell
+            self.split_widget = SplitTerminalWidget(shell, settings=self.settings)
+            index = self.tab_widget.addTab(self.split_widget, f"Tab {self.tab_widget.count() + 1}")
+            self.tab_widget.setCurrentIndex(index)
+        else:
+            # Add a new tab with a new split widget
+            split_widget = SplitTerminalWidget(shell, settings=self.settings)
+            index = self.tab_widget.addTab(split_widget, f"Tab {self.tab_widget.count() + 1}")
+            self.tab_widget.setCurrentIndex(index)
+
         shell.apply_settings(self.settings)
         shell.output_area.setFocus()
         self._renumber_tabs()
@@ -192,6 +237,10 @@ class MainWindow(QMainWindow):
             self.showNormal()
 
             # Ensure the window is visible if it was previously hidden
+            if not self.isVisible():
+                self.show()
+        else:
+            # When in quake mode, ensure the window is shown if it was hidden
             if not self.isVisible():
                 self.show()
 
@@ -294,6 +343,8 @@ class MainWindow(QMainWindow):
         else:
             if self.settings.quake_enabled:
                 self._apply_quake_height()
+                # In quake mode, ensure the window is shown after applying height
+                self.show()
             else:
                 # When not in quake mode, ensure proper window visibility
                 self.showNormal()

@@ -142,6 +142,14 @@ class SettingsDialog(QDialog):
         self.quake_shorter_seq.setKeySequence(QKeySequence(self.settings.quake_resize_down_shortcut))
         form.addRow("Quake height -", self.quake_shorter_seq)
 
+        self.split_horizontal_seq = QKeySequenceEdit()
+        self.split_horizontal_seq.setKeySequence(QKeySequence(self.settings.split_horizontal_shortcut))
+        form.addRow("Split horizontal", self.split_horizontal_seq)
+
+        self.split_vertical_seq = QKeySequenceEdit()
+        self.split_vertical_seq.setKeySequence(QKeySequence(self.settings.split_vertical_shortcut))
+        form.addRow("Split vertical", self.split_vertical_seq)
+
         return widget
 
     def _build_colors_tab(self):
@@ -198,6 +206,8 @@ class SettingsDialog(QDialog):
         updated.new_window_shortcut = self.new_window_seq.keySequence().toString()
         updated.quake_resize_up_shortcut = self.quake_taller_seq.keySequence().toString()
         updated.quake_resize_down_shortcut = self.quake_shorter_seq.keySequence().toString()
+        updated.split_horizontal_shortcut = self.split_horizontal_seq.keySequence().toString()
+        updated.split_vertical_shortcut = self.split_vertical_seq.keySequence().toString()
         updated.color_theme = self.theme_combo.currentText()
         updated.cursor_blink = self.cursor_blink_cb.isChecked()
         updated.default_shell = self.default_shell.currentText()

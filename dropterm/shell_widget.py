@@ -122,7 +122,8 @@ class ShellWidget(QWidget):
         self.output_area.setFocus()
         font = QFont(self.font_family, self.font_size)
         self.output_area.setFont(font)
-        self.output_area.setCursorWidth(0)
+        # Initially set cursor width to 1 (visible) for normal mode
+        self.output_area.setCursorWidth(1)
         self.output_area.setStyleSheet(f"background-color:{self.base_bg}; color:{self.base_fg};")
         self.output_area.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self.output_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
@@ -299,7 +300,10 @@ class ShellWidget(QWidget):
             is_cursor_cell = cursor_col is not None and col == cursor_col
             style = self._style_for_char(char) or None
 
-            if is_cursor_cell:
+            # Only render cursor if we're not in alternate screen mode (ncurses apps)
+            show_cursor = is_cursor_cell and not self.in_alternate_screen
+
+            if show_cursor:
                 if current_style is not None:
                     html_parts.append("</span>")
                     current_style = None
@@ -438,6 +442,15 @@ class ShellWidget(QWidget):
                 if isinstance(screen, screens.HistoryScreen):
                     self._alt_history_marker = (len(screen.history.top), len(screen.history.bottom))
                 self.in_alternate_screen = True
+                # Hide the text cursor when switching to alternate screen
+                if hasattr(self, 'output_area') and self.output_area:
+                    self.output_area.setCursorWidth(0)
+                    # Also clear any selection to avoid visual artifacts
+                    cursor = self.output_area.textCursor()
+                    cursor.clearSelection()
+                    self.output_area.setTextCursor(cursor)
+                    # Set viewport cursor to blank to hide it completely
+                    self.output_area.viewport().setCursor(Qt.CursorShape.BlankCursor)
             if any(seq in text for seq in ("\x1b[?1049l", "\x1b[?47l", "\x1b[?1047l")):
                 screen = self.terminal.screen
                 if isinstance(screen, screens.HistoryScreen) and self._alt_history_marker:
@@ -448,6 +461,11 @@ class ShellWidget(QWidget):
                         screen.history.bottom.pop()
                 self._alt_history_marker = None
                 self.in_alternate_screen = False
+                # Show the text cursor when switching back to primary screen
+                if hasattr(self, 'output_area') and self.output_area:
+                    self.output_area.setCursorWidth(1)
+                    # Restore normal cursor in regular mode
+                    self.output_area.viewport().setCursor(Qt.CursorShape.IBeamCursor)
 
         # Only update the UI if the terminal is visible to reduce unnecessary updates
         if not self.isVisible():
@@ -463,9 +481,11 @@ class ShellWidget(QWidget):
         if hasattr(self, '_update_timer') and self._update_timer and self._update_timer.isActive():
             return
 
+        # Adjust the update delay based on whether we're in alternate screen mode (for better ncurses performance)
+        update_delay = 5 if self.in_alternate_screen else 10  # 5ms for ncurses apps, 10ms otherwise
         # Create a timer for delayed update to batch multiple updates
         from PyQt6.QtCore import QTimer
-        self._update_timer = QTimer.singleShot(10, self._process_pending_update)  # 10ms delay to batch updates
+        self._update_timer = QTimer.singleShot(update_delay, self._process_pending_update)  # Adjusted delay to improve responsiveness
 
     def _process_pending_update(self):
         """Process the pending update and render the screen"""
@@ -477,11 +497,29 @@ class ShellWidget(QWidget):
         previous_scroll_value = scrollbar.value()
         at_bottom = previous_scroll_value >= scrollbar.maximum()
 
+        # Temporarily disable updates to improve performance during setHtml
+        self.output_area.setUpdatesEnabled(False)
+
         # Render the updated screen
         display_text, display_html = self._render_screen()
 
-        # Temporarily disable updates to improve performance during setHtml
-        self.output_area.setUpdatesEnabled(False)
+        # Check if we're in alternate screen mode (likely an ncurses application)
+        if self.in_alternate_screen:
+            # Hide the text cursor during ncurses application run
+            self.output_area.setCursorWidth(0)
+            # Also hide the selection to avoid any visual artifacts
+            cursor = self.output_area.textCursor()
+            cursor.clearSelection()
+            self.output_area.setTextCursor(cursor)
+            # Disable the text interaction cursor to fully hide it in ncurses mode
+            self.output_area.viewport().setCursor(Qt.CursorShape.BlankCursor)
+        else:
+            # Show the text cursor in regular mode
+            self.output_area.setCursorWidth(1)
+            # Restore normal cursor in regular mode
+            self.output_area.viewport().setCursor(Qt.CursorShape.IBeamCursor)
+
+        # Set the HTML content
         self.output_area.setHtml(self._wrap_html(display_html))
         self.output_area.setUpdatesEnabled(True)
 
@@ -495,6 +533,9 @@ class ShellWidget(QWidget):
         # Move cursor to the end of the text
         new_cursor = self.output_area.textCursor()
         new_cursor.movePosition(new_cursor.MoveOperation.End)
+        # If we're in alternate screen mode, make sure cursor is properly handled
+        if self.in_alternate_screen:
+            new_cursor.clearSelection()
         self.output_area.setTextCursor(new_cursor)
 
         # Restore the previous scroll position

@@ -1,4 +1,5 @@
 from PyQt6.QtCore import QThread, pyqtSignal
+import time
 
 
 class TerminalThread(QThread):
@@ -10,8 +11,16 @@ class TerminalThread(QThread):
         super().__init__()
         self.terminal = terminal_emulator
         self.running = True
+        # Buffer to collect output before emitting to reduce UI update frequency
+        self.output_buffer = ""
+        # Time threshold for output buffering (in seconds)
+        self.buffer_time_threshold = 0.01  # 10ms
+        # Size threshold for output buffering
+        self.buffer_size_threshold = 1024
 
     def run(self):
+        last_emit_time = time.time()
+
         while self.running and self.terminal.running:
             try:
                 # Check if the terminal process is still alive
@@ -21,9 +30,26 @@ class TerminalThread(QThread):
 
                 output = self.terminal.read(1024)
                 if output:
-                    self.output_received.emit(output)
+                    self.output_buffer += output
+                    current_time = time.time()
+
+                    # Emit output if buffer is large enough or enough time has passed
+                    if (len(self.output_buffer) >= self.buffer_size_threshold or
+                        current_time - last_emit_time >= self.buffer_time_threshold):
+                        self.output_received.emit(self.output_buffer)
+                        self.output_buffer = ""
+                        last_emit_time = current_time
             except Exception:
+                # If there's an error and we have buffered data, emit it before breaking
+                if self.output_buffer:
+                    self.output_received.emit(self.output_buffer)
+                    self.output_buffer = ""
                 break
+
+        # Emit any remaining buffered output
+        if self.output_buffer:
+            self.output_received.emit(self.output_buffer)
+            self.output_buffer = ""
 
         # Check if the terminal process is dead to trigger exit callback
         if not self.terminal.pty_process.isalive() and self.terminal.exit_callback:
@@ -33,4 +59,8 @@ class TerminalThread(QThread):
 
     def stop(self):
         self.running = False
+        # Emit any remaining buffer if we're stopping
+        if self.output_buffer:
+            self.output_received.emit(self.output_buffer)
+            self.output_buffer = ""
 

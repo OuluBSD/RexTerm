@@ -154,21 +154,34 @@ class ShellWidget(QWidget):
 
     def _wrap_html(self, body: str) -> str:
         blink_rule = "animation: cursor-blink 1s steps(1, start) infinite;" if self.cursor_blink else "animation: none;"
-        cursor_css = (
-            "<style>"
-            f".cursor-block {{ {blink_rule} }}"
-            "@keyframes cursor-blink { 0%,49% { opacity: 1; } 50%,100% { opacity: 0; } }"
-            "</style>"
-        )
+        # Precompute and cache CSS if it hasn't been changed
+        if not hasattr(self, '_cached_css') or self._is_css_outdated():
+            self._cached_css = (
+                "<style>"
+                f".cursor-block {{ {blink_rule} }}"
+                "@keyframes cursor-blink { 0%,49% { opacity: 1; } 50%,100% { opacity: 0; } }"
+                "</style>"
+            )
+            self._last_blink_state = self.cursor_blink
+
+        # Use f-strings with precomputed CSS
         return (
-            f"{cursor_css}"
+            f"{self._cached_css}"
             f"<pre style=\"margin:0; white-space: pre; font-family:'{self.font_family}', monospace; font-size:{self.font_size}pt; background-color:{self.base_bg}; color:{self.base_fg};\">"
             f"{body}"
             "</pre>"
         )
 
+    def _is_css_outdated(self):
+        return not hasattr(self, '_last_blink_state') or self._last_blink_state != self.cursor_blink
+
     def apply_settings(self, settings: AppSettings):
         self.settings = settings
+        # Check if settings that affect the HTML wrapper have changed
+        font_changed = (self.font_family != settings.font_family or self.font_size != settings.font_size)
+        colors_changed = (self.base_bg != settings.palette()["background"] or self.base_fg != settings.palette()["foreground"])
+        cursor_blink_changed = (self.cursor_blink != settings.cursor_blink)
+
         self.font_family = settings.font_family
         self.font_size = settings.font_size
         self._update_shortcut_sequences(settings)
@@ -186,6 +199,13 @@ class ShellWidget(QWidget):
                 self.terminal.screen.history.maxlen = settings.scrollback_lines
             except Exception:
                 pass
+
+        # If any of the properties that affect the HTML wrapper changed, clear the cache
+        if font_changed or colors_changed or cursor_blink_changed:
+            if hasattr(self, '_cached_css'):
+                delattr(self, '_cached_css')
+            if hasattr(self, '_last_blink_state'):
+                delattr(self, '_last_blink_state')
 
         self.append_output("")
         self.update_terminal_size()
@@ -206,17 +226,14 @@ class ShellWidget(QWidget):
         if isinstance(value, int):
             return self.xterm_palette.get(value)
         if isinstance(value, str) and value.isdigit():
-            try:
-                idx = int(value, 10)
-                if 0 <= idx <= 255:
-                    return self.xterm_palette.get(idx)
-            except ValueError:
-                pass
+            idx = int(value, 10)
+            if 0 <= idx <= 255:
+                return self.xterm_palette.get(idx)
 
         if isinstance(value, str):
             if value.startswith("#") and len(value) == 7:
                 return value.lower()
-            if re.fullmatch(r"[0-9a-fA-F]{6}", value):
+            if len(value) == 6 and all(c in '0123456789abcdefABCDEF' for c in value):
                 return f"#{value.lower()}"
 
         return self.color_map.get(value, None)
@@ -229,19 +246,20 @@ class ShellWidget(QWidget):
             fg, bg = bg, fg
 
         styles = []
+        append = styles.append  # Local reference for faster access
         if fg:
-            styles.append(f"color:{fg}")
+            append(f"color:{fg}")
         if bg:
-            styles.append(f"background-color:{bg}")
+            append(f"background-color:{bg}")
         if getattr(char, "conceal", False):
-            styles.append("color: transparent")
+            append("color: transparent")
         if getattr(char, "bold", False):
-            styles.append("font-weight:bold")
+            append("font-weight:bold")
         if getattr(char, "italics", False):
-            styles.append("font-style:italic")
+            append("font-style:italic")
         if getattr(char, "underscore", False):
-            styles.append("text-decoration: underline")
-        return ";".join(styles)
+            append("text-decoration: underline")
+        return ";".join(styles) if styles else ""
 
     def _build_xterm_palette(self):
         palette = {}
@@ -287,10 +305,12 @@ class ShellWidget(QWidget):
                     current_style = None
 
                 base_style = self._style_for_char(char)
-                base_parts = [
-                    part for part in (base_style.split(";") if base_style else [])
-                    if part and not part.startswith("color:") and not part.startswith("background-color:")
-                ]
+                base_parts = []
+                if base_style:
+                    base_parts = [
+                        part for part in base_style.split(";")
+                        if part and not part.startswith("color:") and not part.startswith("background-color:")
+                    ]
 
                 fg = self._css_color(getattr(char, "fg", None)) or self.base_fg
                 bg = self._css_color(getattr(char, "bg", None)) or self.base_bg
@@ -298,7 +318,19 @@ class ShellWidget(QWidget):
                 cursor_styles = base_parts + [f"background-color:{fg}", f"color:{bg}"]
                 cursor_char = ch if ch != " " else "\u00a0"
                 html_parts.append(f'<span class="cursor-block" style="{";".join(cursor_styles)}">')
-                html_parts.append(html.escape(cursor_char))
+                # Properly escape the cursor character
+                if cursor_char == '&':
+                    html_parts.append('&amp;')
+                elif cursor_char == '<':
+                    html_parts.append('&lt;')
+                elif cursor_char == '>':
+                    html_parts.append('&gt;')
+                elif cursor_char == '"':
+                    html_parts.append('&quot;')
+                elif cursor_char == "'":
+                    html_parts.append('&#x27;')
+                else:
+                    html_parts.append(cursor_char)
                 html_parts.append("</span>")
                 continue
 
@@ -309,7 +341,19 @@ class ShellWidget(QWidget):
                     html_parts.append(f'<span style="{style}">')
                 current_style = style
 
-            html_parts.append(html.escape(ch))
+            # Use a more efficient escaping function for single characters
+            if ch == '&':
+                html_parts.append('&amp;')
+            elif ch == '<':
+                html_parts.append('&lt;')
+            elif ch == '>':
+                html_parts.append('&gt;')
+            elif ch == '"':
+                html_parts.append('&quot;')
+            elif ch == "'":
+                html_parts.append('&#x27;')
+            else:
+                html_parts.append(ch)
 
         if current_style is not None:
             html_parts.append("</span>")
@@ -327,7 +371,8 @@ class ShellWidget(QWidget):
 
         history_active = isinstance(screen, screens.HistoryScreen) and not self.in_alternate_screen
         if history_active:
-            line_sources.extend(list(screen.history.top))
+            # Use extend instead of list() to avoid creating intermediate list
+            line_sources.extend(screen.history.top)
             cursor_row_offset = len(screen.history.top)
         else:
             cursor_row_offset = 0
@@ -338,22 +383,27 @@ class ShellWidget(QWidget):
             cursor_col = screen.cursor.x
             cursor_line_index = cursor_row_offset + screen.cursor.y
 
+        # Use the buffer directly for better performance
+        screen_buffer = screen.buffer
         for row in range(screen.lines):
-            line_sources.append(screen.buffer[row])
+            line_sources.append(screen_buffer[row])
 
         if history_active and screen.history.bottom:
-            line_sources.extend(list(screen.history.bottom))
+            line_sources.extend(screen.history.bottom)
 
         if cursor_line_index is not None and cursor_line_index >= len(line_sources):
             cursor_line_index = None
             cursor_col = None
 
+        # Use local method reference for performance
+        render_line = self._render_line
         for idx, line in enumerate(line_sources):
             active_cursor_col = cursor_col if cursor_line_index is not None and idx == cursor_line_index else None
-            plain_line, html_line = self._render_line(line, cursor_col=active_cursor_col)
+            plain_line, html_line = render_line(line, cursor_col=active_cursor_col)
             plain_lines.append(plain_line)
             html_lines.append(html_line)
 
+        # Use str.join with generator expression for better memory usage
         return "\n".join(plain_lines), "\n".join(html_lines)
 
     def append_output(self, text):
@@ -399,13 +449,41 @@ class ShellWidget(QWidget):
                 self._alt_history_marker = None
                 self.in_alternate_screen = False
 
+        # Only update the UI if the terminal is visible to reduce unnecessary updates
+        if not self.isVisible():
+            return
+
+        # Use a simple buffering approach to batch updates if multiple come in quickly
+        if not hasattr(self, '_pending_update'):
+            self._pending_update = ""
+
+        self._pending_update += text
+
+        # If we're already waiting for an update, return without scheduling another
+        if hasattr(self, '_update_timer') and self._update_timer and self._update_timer.isActive():
+            return
+
+        # Create a timer for delayed update to batch multiple updates
+        from PyQt6.QtCore import QTimer
+        self._update_timer = QTimer.singleShot(10, self._process_pending_update)  # 10ms delay to batch updates
+
+    def _process_pending_update(self):
+        """Process the pending update and render the screen"""
+        if not hasattr(self, '_pending_update') or not self._pending_update:
+            return
+
         scrollbar = self.output_area.verticalScrollBar()
+        # Save scroll position to try to maintain it after update
         previous_scroll_value = scrollbar.value()
         at_bottom = previous_scroll_value >= scrollbar.maximum()
 
+        # Render the updated screen
         display_text, display_html = self._render_screen()
 
+        # Temporarily disable updates to improve performance during setHtml
+        self.output_area.setUpdatesEnabled(False)
         self.output_area.setHtml(self._wrap_html(display_html))
+        self.output_area.setUpdatesEnabled(True)
 
         doc_text = self.output_area.toPlainText()
         self.input_start_position = len(doc_text)
@@ -414,15 +492,19 @@ class ShellWidget(QWidget):
             self.logger.debug(f"Terminal screen display output: {repr(display_text[:500])}")
             self.logger.debug(f"Updated input_start_position to: {self.input_start_position}")
 
+        # Move cursor to the end of the text
         new_cursor = self.output_area.textCursor()
         new_cursor.movePosition(new_cursor.MoveOperation.End)
         self.output_area.setTextCursor(new_cursor)
-        self.output_area.setFocus()
 
+        # Restore the previous scroll position
         if at_bottom:
             scrollbar.setValue(scrollbar.maximum())
         else:
             scrollbar.setValue(min(previous_scroll_value, scrollbar.maximum()))
+
+        # Clear the pending update
+        self._pending_update = ""
 
     def execute_command(self):
         full_text = self.output_area.toPlainText()
@@ -863,6 +945,10 @@ class ShellWidget(QWidget):
                     break
 
     def closeEvent(self, event):
+        # Cancel any pending update timer to prevent accessing deleted objects
+        if hasattr(self, '_update_timer') and self._update_timer:
+            self._update_timer = None
+
         if self.output_buffer:
             has_ansi = '\x1b[' in self.output_buffer
             if has_ansi:

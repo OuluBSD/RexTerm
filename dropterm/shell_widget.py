@@ -126,7 +126,8 @@ class ShellWidget(QWidget):
         self.output_area.setStyleSheet(f"background-color:{self.base_bg}; color:{self.base_fg};")
         self.output_area.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self.output_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
-        self.output_area.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
+        self.output_area.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.output_area.customContextMenuRequested.connect(self._show_context_menu)
         self.input_start_position = 0
 
         layout.addWidget(self.output_area)
@@ -808,6 +809,40 @@ class ShellWidget(QWidget):
             self.terminal.write('cls\n')
         else:
             self.terminal.write('clear\n')
+
+    def _show_context_menu(self, position):
+        """Show context menu with split options"""
+        menu = self.output_area.createStandardContextMenu()
+
+        # Add separator
+        menu.addSeparator()
+
+        # Add split options
+        split_horizontal_action = menu.addAction("Split Horizontally")
+        split_horizontal_action.triggered.connect(self.split_horizontal)
+
+        split_vertical_action = menu.addAction("Split Vertically")
+        split_vertical_action.triggered.connect(self.split_vertical)
+
+        menu.exec(self.output_area.mapToGlobal(position))
+
+    def split_horizontal(self):
+        """Request to split the terminal horizontally"""
+        parent = self.parent()
+        while parent:
+            if hasattr(parent, 'split_horizontal') and callable(getattr(parent, 'split_horizontal')):
+                parent.split_horizontal()
+                break
+            parent = parent.parent()
+
+    def split_vertical(self):
+        """Request to split the terminal vertically"""
+        parent = self.parent()
+        while parent:
+            if hasattr(parent, 'split_vertical') and callable(getattr(parent, 'split_vertical')):
+                parent.split_vertical()
+                break
+            parent = parent.parent()
 
     def _on_terminal_exit(self):
         """Callback when the terminal process exits - close the tab"""

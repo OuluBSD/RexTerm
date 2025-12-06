@@ -4,6 +4,9 @@ __pycache__/
 *$py.class
 *.so
 .Python
+*.pyc
+*.pyo
+*.pyd
 build/
 develop-eggs/
 dist/
@@ -20,6 +23,24 @@ wheels/
 .installed.cfg
 *.egg
 
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+.env/
+pyenv/
+.python-version
+
+# Pip
+# https://pip.pypa.io/en/stable/topics/configuration/#environment-variables
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Local pip installations and cache
+.pip_cache/
+.pip/
+
 # IDE
 .vscode/
 .idea/
@@ -30,15 +51,31 @@ wheels/
 .DS_Store
 Thumbs.db
 
-# Virtual environments
-venv/
-env/
-ENV/
-.venv/
-.env/
+# Distribution / packaging
+*.egg~*
+*.zip
+*.tar.gz
+
+# PyInstaller
+*.spec
+
+# PowerShell scripts - temporary/development scripts
+*_temp.ps1
+*_test.ps1
+*_debug.ps1
+tmp_*.ps1
 
 # Log files
 *.log
 
 # Local debug helpers
 debug_*.py
+
+# Temporary files
+*.tmp
+*.temp
+temp_*/
+tmp_*/
+
+# Windows shortcut files
+*.lnk

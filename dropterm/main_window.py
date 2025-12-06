@@ -33,6 +33,18 @@ class MainWindow(QMainWindow):
         self.settings = settings or AppSettings()
         self.setWindowTitle("GUI Shell")
         self.setGeometry(100, 100, 800, 600)
+
+        # Set the window icon
+        import os
+        from PyQt6.QtGui import QIcon
+        # Try the ICO file first, then fallback to PNG
+        # Calculate the project root directory (where gui_shell.py is located)
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        icon_path = os.path.join(project_root, 'icon.ico')
+        if not os.path.exists(icon_path):
+            icon_path = os.path.join(project_root, 'icon.png')
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
         self.hotkey_filter = HotkeyEventFilter(self._handle_hotkey)
         self.hotkey_registered = False
         self._native_filter_installed = False

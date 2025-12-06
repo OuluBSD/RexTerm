@@ -119,6 +119,18 @@ def main():
     app.setApplicationName("GUI Shell")
     app.setApplicationVersion("1.0")
 
+    # Set the application icon
+    import os
+    from PyQt6.QtGui import QIcon
+    # Try the ICO file first, then fallback to PNG
+    # Calculate the project root directory (where gui_shell.py is located)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    icon_path = os.path.join(project_root, 'icon.ico')
+    if not os.path.exists(icon_path):
+        icon_path = os.path.join(project_root, 'icon.png')
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
+
     settings = AppSettings.load()
 
     parser = argparse.ArgumentParser(description='GUI Shell with MSYS2 support')

@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="banner.jpg" alt="RexTerm Banner" width="600"/>
+</div>
+
 # RexTerm
 
 Cross-platform drop-down terminal for Windows, macOS, and Linux. It can float down from the top of the screen like Guake or run as a normal terminal window.
@@ -10,6 +14,11 @@ We wanted to just fork Guake, but the Linux-first codebase proved too difficult 
 - Truecolor/TERM export and scrollback via pyte + platform-appropriate PTY backend
 - Global hotkey for toggling the quake window (Windows only)
 - Settings dialog for fonts, themes, quake behavior, and shortcuts
+- Command execution capabilities
+- Command history with up/down arrow navigation
+- Keyboard shortcuts (Ctrl+C for interrupt, Ctrl+L to clear)
+- Proper terminal I/O handling through winpty
+- Threading for asynchronous operations
 
 ## Dependencies
 - Python 3.8+
@@ -41,3 +50,10 @@ python gui_shell.py
 - Default behavior follows Guake: quake-style drop-down when enabled, otherwise a standard window.
 - On Windows the PTY layer uses winpty; on Unix-like systems it uses ptyprocess for cross-platform PTY support.
 - Global hotkey functionality is currently Windows-only.
+- In MSYS2/MinGW environments, pywinpty is installed as 'winpty'
+- The winpty module has a different API than standard pywinpty:
+  - Uses `pywinpty.ptyprocess.PtyProcess` instead of `pywinpty.spawn_process`
+  - Read and write methods have different signatures
+- Terminal might close prematurely under certain conditions
+- The winpty API doesn't directly support resizing
+- Reading from the terminal requires careful handling of timing and availability

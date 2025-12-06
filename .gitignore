@@ -79,3 +79,10 @@ tmp_*/
 
 # Windows shortcut files
 *.lnk
+
+.claude
+
+
+dropterm_env
+icon_env
+

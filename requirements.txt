@@ -1,4 +1,8 @@
 pyte>=0.8.0
 PyQt6>=6.0.0
+keyboard
 pywinpty>=2.0.0; sys_platform == "win32"  # installed as 'winpty' in MSYS2/MinGW environments
 ptyprocess>=0.7.0
+
+# Note: For Unix-like systems (Linux/macOS), use requirements_unix.txt which excludes pywinpty
+# pywinpty is only available on Windows systems

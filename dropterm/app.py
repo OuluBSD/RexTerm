@@ -116,7 +116,7 @@ def _run_headless_eval(args, session_settings, app):
 def main():
     app = QApplication(sys.argv)
     app.setOrganizationName("OuluBSD")
-    app.setApplicationName("GUI Shell")
+    app.setApplicationName("RexTerm")
     app.setApplicationVersion("1.0")
 
     # Set the application icon

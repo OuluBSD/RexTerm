@@ -40,6 +40,11 @@ pacman -S mingw-w64-clang-x86_64-python-pyqt6 mingw-w64-clang-x86_64-python-pywi
 pip install -r requirements.txt
 ```
 
+## Installation (macOS)
+```bash
+./install_macos.sh
+```
+
 ## Usage
 Run the app:
 ```bash
@@ -49,7 +54,8 @@ python gui_shell.py
 ## Notes
 - Default behavior follows Guake: quake-style drop-down when enabled, otherwise a standard window.
 - On Windows the PTY layer uses winpty; on Unix-like systems it uses ptyprocess for cross-platform PTY support.
-- Global hotkey functionality is currently Windows-only.
+- Global hotkey functionality is now available cross-platform using the keyboard library.
+- On macOS, you may need to grant accessibility permissions for global hotkeys to work. Go to System Preferences > Security & Privacy > Privacy > Accessibility, and add your Python application or terminal.
 - In MSYS2/MinGW environments, pywinpty is installed as 'winpty'
 - The winpty module has a different API than standard pywinpty:
   - Uses `pywinpty.ptyprocess.PtyProcess` instead of `pywinpty.spawn_process`

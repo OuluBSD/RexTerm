@@ -2,7 +2,7 @@ import sys
 import ctypes
 import logging
 
-from PyQt6.QtCore import QCoreApplication, Qt
+from PyQt6.QtCore import QCoreApplication, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
@@ -28,10 +28,13 @@ from .split_widget import SplitTerminalWidget
 class MainWindow(QMainWindow):
     """Main application window."""
 
+    # Signal to handle hotkey events from other threads safely
+    hotkey_signal = pyqtSignal()
+
     def __init__(self, shell_type='auto', scrollback_lines=1000, term_override=None, colorterm_value="truecolor", settings: AppSettings | None = None):
         super().__init__()
         self.settings = settings or AppSettings()
-        self.setWindowTitle("GUI Shell")
+        self.setWindowTitle("RexTerm")
         self.setGeometry(100, 100, 800, 600)
 
         # Set the window icon
@@ -48,6 +51,7 @@ class MainWindow(QMainWindow):
         self.hotkey_filter = HotkeyEventFilter(self._handle_hotkey)
         self.hotkey_registered = False
         self._native_filter_installed = False
+        self.platform_hotkey_handle = None  # For cross-platform hotkey implementation
         self.tray_icon: QSystemTrayIcon | None = None
         self.session_shell_type = shell_type
         self.session_scrollback = scrollback_lines
@@ -60,12 +64,17 @@ class MainWindow(QMainWindow):
 
         self.add_terminal_tab(shell_type=shell_type, scrollback_lines=scrollback_lines)
         self.setup_shortcuts()
+
+        # Connect the hotkey signal to the actual hotkey handler
+        self.hotkey_signal.connect(self._handle_hotkey_from_signal)
+
         self.apply_window_settings()
 
     def _setup_central_ui(self):
         container = QWidget()
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)  # Remove any spacing between elements
 
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabsClosable(True)
@@ -74,6 +83,17 @@ class MainWindow(QMainWindow):
         self.tab_widget.currentChanged.connect(self._tab_changed)
         self.tab_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tab_widget.customContextMenuRequested.connect(self._tab_context_menu)
+
+        # Remove margins from the tab widget
+        self.tab_widget.setStyleSheet(
+            """
+            QTabWidget::pane {
+                border: 0;
+                margin: 0;
+                padding: 0;
+            }
+            """
+        )
 
         self.menu_button = QToolButton(self)
         self.menu_button.setText("Menu")
@@ -424,43 +444,68 @@ class MainWindow(QMainWindow):
 
     def _handle_hotkey(self, hotkey_id):
         if hotkey_id == GLOBAL_HOTKEY_ID and self.settings.quake_enabled:
+            # Emit the signal to handle the hotkey on the main thread
+            self.hotkey_signal.emit()
+
+    def _handle_hotkey_from_signal(self):
+        # This method runs on the main thread, so it's safe to update the UI
+        if self.settings.quake_enabled:
             self._toggle_visibility()
 
     def _register_global_hotkey(self):
+        # Wait briefly after unregistration to ensure the old listener is fully stopped
         self._unregister_global_hotkey()
+        import time
+        time.sleep(0.1)
+
         if not self.settings.quake_enabled:
             return
 
-        # Only register global hotkey on Windows
         if sys.platform == 'win32':
-            parsed = parse_hotkey_to_win(self.settings.quake_hotkey)
-            if not parsed:
-                logging.warning("No hotkey set for quake mode; skipping registration.")
-                return
-
-            mods, vk = parsed
-
+            # Use Windows-specific hotkey registration
+            from .hotkeys import register_windows_hotkey
             hwnd = int(self.winId())
-            if ctypes.windll.user32.RegisterHotKey(hwnd, GLOBAL_HOTKEY_ID, mods, vk):
+            if register_windows_hotkey(hwnd, self.settings.quake_hotkey, GLOBAL_HOTKEY_ID):
                 if not self._native_filter_installed:
                     QCoreApplication.instance().installNativeEventFilter(self.hotkey_filter)
                     self._native_filter_installed = True
                 self.hotkey_registered = True
+                logging.info("Successfully registered Windows global hotkey '%s'", self.settings.quake_hotkey)
             else:
-                logging.warning("Failed to register global hotkey '%s'", self.settings.quake_hotkey)
+                self.hotkey_registered = False
+                logging.warning("Failed to register Windows global hotkey '%s'", self.settings.quake_hotkey)
         else:
-            # On non-Windows systems, we use Qt's standard hotkey functionality or skip
-            logging.info("Global hotkey is Windows only. Using application hotkey instead.")
-            # TODO: Consider implementing cross-platform hotkey solution for non-Windows systems
+            # Use cross-platform hotkey registration
+            from .hotkeys import register_global_hotkey
+
+            # Register global hotkey using cross-platform implementation
+            if register_global_hotkey(self.settings.quake_hotkey, lambda: self._handle_hotkey(GLOBAL_HOTKEY_ID)):
+                self.hotkey_registered = True
+                logging.info("Successfully registered global hotkey '%s'", self.settings.quake_hotkey)
+            else:
+                logging.warning("Failed to register global hotkey '%s'. On macOS, you may need to grant accessibility permissions to your terminal/app.", self.settings.quake_hotkey)
+                # Still consider hotkey as registered since the functionality is available when permissions are granted
+                self.hotkey_registered = True
 
     def _unregister_global_hotkey(self):
-        if sys.platform == 'win32' and self.hotkey_registered:
-            ctypes.windll.user32.UnregisterHotKey(int(self.winId()), GLOBAL_HOTKEY_ID)
+        if sys.platform == 'win32':
+            # Use Windows-specific hotkey unregistration
+            from .hotkeys import unregister_windows_hotkey
+            hwnd = int(self.winId())
+            unregister_windows_hotkey(hwnd, GLOBAL_HOTKEY_ID)
             self.hotkey_registered = False
 
-        if self._native_filter_installed and not self.hotkey_registered:
-            QCoreApplication.instance().removeNativeEventFilter(self.hotkey_filter)
-            self._native_filter_installed = False
+            # Clean up Windows-specific resources
+            if self._native_filter_installed:
+                QCoreApplication.instance().removeNativeEventFilter(self.hotkey_filter)
+                self._native_filter_installed = False
+        else:
+            # Use cross-platform approach to unregister hotkey
+            from .hotkeys import unregister_global_hotkey
+
+            if self.hotkey_registered:
+                unregister_global_hotkey()
+                self.hotkey_registered = False
 
     def clear_screen(self):
         shell = self.current_shell_widget()
@@ -475,10 +520,11 @@ class MainWindow(QMainWindow):
             self.apply_window_settings()
 
     def show_about(self):
-        QMessageBox.about(self, "About GUI Shell",
-                         "GUI Shell - A terminal emulator built with Python, PyQt6, and pywinpty")
+        QMessageBox.about(self, "About RexTerm",
+                         "RexTerm - A terminal emulator built with Python, PyQt6, and pywinpty")
 
     def closeEvent(self, event):
+        # Ensure global hotkey is unregistered before closing
         self._unregister_global_hotkey()
         if self.tray_icon:
             self.tray_icon.hide()

@@ -1,0 +1,4 @@
+pyte>=0.8.0
+PyQt6>=6.0.0
+ptyprocess>=0.7.0
+keyboard

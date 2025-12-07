@@ -85,4 +85,5 @@ tmp_*/
 
 dropterm_env
 icon_env
-
+**/__pycache__
+x

@@ -198,7 +198,7 @@ class SettingsDialog(QDialog):
         form = QFormLayout(widget)
 
         self.default_shell = QComboBox()
-        self.default_shell.addItems(["auto", "bash", "cmd"])
+        self.default_shell.addItems(["auto", "bash", "zsh", "cmd"])
         shell_index = self.default_shell.findText(self.settings.default_shell)
         if shell_index >= 0:
             self.default_shell.setCurrentIndex(shell_index)

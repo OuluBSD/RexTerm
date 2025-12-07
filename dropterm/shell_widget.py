@@ -51,7 +51,7 @@ class ShellWidget(QWidget):
         # Track application keypad mode state for ncurses apps
         self.application_mode = False
 
-        # Set default shell type based on platform - 'bash' is more appropriate for Linux
+        # Set default shell type based on platform - respect the user's choice from settings
         effective_shell_type = shell_type if shell_type != 'auto' else ('bash' if sys.platform != 'win32' else 'auto')
 
         self.terminal = TerminalEmulator(cols=80, rows=24, shell_type=effective_shell_type, history_lines=scrollback_lines, term_override=term_override, colorterm_value=colorterm_value, exit_callback=self._on_terminal_exit)
